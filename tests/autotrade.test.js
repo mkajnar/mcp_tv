@@ -123,6 +123,15 @@ describe('decide', () => {
     assert.match(d.reasons.at(-1), /room/);
   });
 
+  it('ignores levels already broken by the current price (limit below market)', () => {
+    // ENA case: limit entry on the pullback, price already above the old high → that high is no obstacle
+    const a = up(); a['15m'] = tf({ extension: 1.2, swing_highs: [101.2, 112] }); a['5m'] = tf({ ema20: 99.5, extension: 1.0 });
+    const d = decide(a, { ...Q, bid: 101.49, ask: 101.5 });
+    assert.equal(d.type, 'limit');
+    assert.equal(d.entry, 99.5);
+    assert.equal(d.nearest_level, 112);
+  });
+
   it('mirrors for a short', () => {
     const flip = (t) => tf({ ...t, trend: -0.8, structure: 'down', ema50: 102, ema200: 105, rsi: 45, rsi_prev: 50,
       swing_highs: [104, 101.5], swing_lows: [90], last_bar: { open: 100.2, high: 100.3, low: 99.7, close: 99.8 }, prev_bar: { open: 100.5, high: 100.6, low: 99.9, close: 100.2 } });

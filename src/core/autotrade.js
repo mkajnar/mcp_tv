@@ -223,10 +223,12 @@ export function decide(a, { bid, ask, min_tick, rr = 2, min_score = AUTO_DEFAULT
   const plan = { side, type, entry, sl, sl_basis: slBasis, dist: Number(dist.toFixed(8)) };
   if (dist > 3 * m15.atr) return wait(`Structural stop too wide: ${(dist / m15.atr).toFixed(1)} ATR(15m) > 3`, { plan });
 
-  // Room to the next opposing level: 1h / 15m swings and the previous daily high/low
+  // Room to the next opposing level: 1h / 15m swings and the previous daily high/low.
+  // Levels the market has already broken (between a pending entry and the current price) are not obstacles.
+  const beyondFrom = dir === 1 ? Math.max(entry, ask) : Math.min(entry, bid);
   const levels = dir === 1
-    ? [...a['1h'].swing_highs, ...m15.swing_highs, a['1d'].last_bar.high].filter(p => p > entry + 0.1 * m5.atr)
-    : [...a['1h'].swing_lows, ...m15.swing_lows, a['1d'].last_bar.low].filter(p => p < entry - 0.1 * m5.atr);
+    ? [...a['1h'].swing_highs, ...m15.swing_highs, a['1d'].last_bar.high].filter(p => p > beyondFrom + 0.1 * m5.atr)
+    : [...a['1h'].swing_lows, ...m15.swing_lows, a['1d'].last_bar.low].filter(p => p < beyondFrom - 0.1 * m5.atr);
   const nearest = levels.length ? (dir === 1 ? Math.min(...levels) : Math.max(...levels)) : null;
   const roomR = nearest == null ? Infinity : Math.abs(nearest - entry) / dist;
   if (roomR < rr) return wait(`Only ${roomR.toFixed(2)}R of room to the next ${dir === 1 ? 'resistance' : 'support'} ${nearest} — need ${rr}R`, { plan });
