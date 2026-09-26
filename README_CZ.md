@@ -177,7 +177,8 @@ Indikátor „MKA Multi“ (RSI, MACD, swingy, T3 FAST/SLOW) kreslí signály T3
   - Při 429, 5xx nebo timeoutu se volání opakuje s rostoucím odstupem.
   - Po 3 chybách se JEV na 10 minut vypne; při 401 nebo 402 hned.
   - S `jev.fallback: "rules"` (výchozí) autoorder pak použije playbook pravidel, s `"wait"` obchod vynechá.
-- **Log:** každá odpověď JEV (akce, jistota, pravděpodobnosti, spotřebované kredity) se zapíše do audit logu a vrátí se ve výsledku pod klíčem `jev`.
+- **Log:** každá odpověď JEV (akce, jistota, pravděpodobnosti, spotřebované kredity) se zapíše do audit logu a vrátí se ve výsledku pod klíčem `jev`. **Celý request** (model, state, otázky) i celá odpověď každého volání se ukládá do `~/.tradingview-mcp/jev/YYYY-MM-DD.jsonl`. Klíč se v logu nahradí hvězdičkami.
+- **`jev.rules_hint`** (výchozí `false`): při `true` dostane JEV ve state i rozhodnutí pravidel jako druhý názor. Při `false` rozhoduje nezávisle.
 
 ## 10. Logy a řešení problémů
 

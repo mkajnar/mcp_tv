@@ -46,7 +46,7 @@ export const DEFAULT_CONFIG = {
     maintenance_margin: 0.005,
   },
   // Jev AI decides entries (direction + order type) and exits (hold / tighten / close). Toggle with `tv order jev on|off`.
-  jev: { enabled: false, exits: true, entry_threshold: 0.6, min_quality: 3, exit_threshold: 0.75, exit_interval_s: 60, fallback: 'rules' },
+  jev: { enabled: false, exits: true, rules_hint: false, entry_threshold: 0.6, min_quality: 3, exit_threshold: 0.75, exit_interval_s: 60, fallback: 'rules' },
   trailing: {
     activate_r: 1,         // leave the original stop alone until the trade is +activate_r·R, then at least break-even
     t3_exit: true,         // close the position when T3 FAST crosses T3 SLOW against it on the last closed bar (atr_timeframe)

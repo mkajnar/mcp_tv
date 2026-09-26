@@ -184,7 +184,8 @@ node src/cli/index.js order cancel
 - **Entries (autoorder):** the state (per-timeframe indicators, T3, swings, last 20 OHLCV bars of 1D/1h/15m/5m/1m, quote and the rules' opinion) goes to Jev with two questions: `action` (choice: long/short × market/limit/stop, or wait) and `setup_quality` (score 1–5). A trade is placed only if `action` confidence ≥ `jev.entry_threshold` (0.6) and quality ≥ `jev.min_quality` (3). The entry price for the chosen type, the structural SL, the too-wide/too-tight guards and ≥ rr·R room are rule-based; then `order_place` (money management).
 - **Exits (trail loop):** when `jev.exits` is on, every open position is asked `exit_action` (hold / tighten / close) at most once per `jev.exit_interval_s` (60 s). `close` needs confidence ≥ `jev.exit_threshold` (0.75); `tighten` moves the SL to at least break-even (never loosens). The ATR trail and T3 exit still run as the safety net.
 - **Failures:** retries with backoff on 429/5xx/timeouts, a circuit breaker (3 failures → 10 min pause, immediately on 401/402). With `jev.fallback: "rules"` (default) autoorder then uses the rule playbook; `"wait"` skips the trade.
-- Every Jev answer (action, confidence, probabilities, credits) is written to the audit log and returned under `jev` in the result.
+- Every Jev answer (action, confidence, probabilities, credits) is written to the audit log and returned under `jev` in the result. The **full request (model, state, questions) and response** of every call is logged to `~/.tradingview-mcp/jev/YYYY-MM-DD.jsonl` (key scrubbed).
+- `jev.rules_hint` (default `false`): when true, the rules engine's own decision is added to the state as a second opinion; off = Jev judges independently.
 
 ### 9. Logs and troubleshooting
 

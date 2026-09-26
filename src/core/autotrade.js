@@ -292,7 +292,7 @@ export function entryForType(a, { dir, type, bid, ask, min_tick }) {
 }
 
 /** Minimal facts for Jev: per timeframe indicators + last 20 OHLCV bars, quote and the rules' opinion. */
-export function buildJevState({ symbol, analysis, bars, quote, ruleDecision }) {
+export function buildJevState({ symbol, analysis, bars, quote, ruleDecision, rulesHint = false }) {
   const r = (x) => (x == null || !Number.isFinite(x) ? x : Number(x.toPrecision(6)));
   const tfs = {};
   for (const tf of TIMEFRAMES) {
@@ -309,7 +309,7 @@ export function buildJevState({ symbol, analysis, bars, quote, ruleDecision }) {
     symbol, quote: { bid: quote.bid, ask: quote.ask },
     ohlcv_columns: ['open', 'high', 'low', 'close', 'volume'],
     timeframes: tfs,
-    rules_engine_hint: ruleDecision ? { action: ruleDecision.action, side: ruleDecision.side, type: ruleDecision.type ?? null,
+    rules_engine_hint: rulesHint && ruleDecision ? { action: ruleDecision.action, side: ruleDecision.side, type: ruleDecision.type ?? null,
       score: ruleDecision.score ?? null, last_reason: ruleDecision.reasons?.at(-1) ?? null } : null,
   };
 }
@@ -401,7 +401,7 @@ export async function autoOrder({ symbol, dry_run = false, risk_usdt, min_score,
     const jcfg = cfg.jev || {};
     if (jev ?? jcfg.enabled) {
       try {
-        const state = buildJevState({ symbol: full, analysis, bars: rawBars, quote: spec, ruleDecision });
+        const state = buildJevState({ symbol: full, analysis, bars: rawBars, quote: spec, ruleDecision, rulesHint: !!jcfg.rules_hint });
         const j = await jevEntry(state, jcfg);
         jevInfo = { used: true, ...j };
         const trends = ruleDecision.trends, bias = ruleDecision.bias;

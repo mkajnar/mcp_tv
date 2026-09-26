@@ -18,6 +18,7 @@
   "jev": {
     "enabled": false,
     "exits": true,
+    "rules_hint": false,
     "entry_threshold": 0.6,
     "min_quality": 3,
     "exit_threshold": 0.75,

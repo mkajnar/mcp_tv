@@ -9,12 +9,24 @@
  *   JEV_API_KEY (required), JEV_API_BASE_URL, JEV_MODEL, JEV_TIMEOUT (s), JEV_MAX_RETRIES
  * The key is never logged or returned.
  */
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync, mkdirSync, appendFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const DEFAULTS = { JEV_API_BASE_URL: 'https://thejevai.com', JEV_MODEL: 'typesafe/jev-1.13', JEV_TIMEOUT: '20', JEV_MAX_RETRIES: '2' };
+const LOG_DIR = join(homedir(), '.tradingview-mcp', 'jev');
+
+/** Full request + response audit (never the key): ~/.tradingview-mcp/jev/YYYY-MM-DD.jsonl */
+function logCall(entry, key) {
+  try {
+    mkdirSync(LOG_DIR, { recursive: true });
+    const line = scrub(JSON.stringify({ ts: new Date().toISOString(), ...entry }), key);
+    appendFileSync(join(LOG_DIR, `${new Date().toISOString().slice(0, 10)}.jsonl`), line + '\n');
+  } catch { /* logging must never break a decision */ }
+}
+
 const RETRY_STATUSES = new Set([429, 500, 502, 503, 504, 529]);
 
 function readEnvFile() {
@@ -69,12 +81,14 @@ export function parseResponse(json) {
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
 /** POST state + questions; only type / instructions / criteria are sent (thresholds stay local). */
-export async function callJev({ state, questions }) {
+export async function callJev({ state, questions, tag = null }) {
   const env = jevEnv();
   if (!env.key) { breaker.open_until = Date.now() + BREAKER_COOLDOWN_MS; throw new Error('JEV_API_KEY is not configured (.env in the repo root or process env)'); }
   if (breaker.open_until > Date.now()) throw new Error(`Jev circuit breaker open until ${new Date(breaker.open_until).toISOString()}`);
   const api = Object.fromEntries(Object.entries(questions).map(([k, q]) => [k, { type: q.type, instructions: q.instructions, ...(q.criteria ? { criteria: q.criteria } : {}) }]));
-  const body = JSON.stringify({ model: env.model, state, questions: api });
+  const request = { model: env.model, state, questions: api };
+  const body = JSON.stringify(request);
+  const t0 = Date.now();
   let lastErr;
   for (let attempt = 0; attempt <= env.max_retries; attempt++) {
     if (attempt) await sleep(Math.min(30000, 1000 * 2 ** (attempt - 1)) + Math.random() * 300);
@@ -90,16 +104,19 @@ export async function callJev({ state, questions }) {
         if (!RETRY_STATUSES.has(res.status)) throw Object.assign(err, { fatal: true });
         lastErr = err; continue;
       }
-      const parsed = parseResponse(JSON.parse(text));
+      const json = JSON.parse(text);
+      const parsed = parseResponse(json);
       breaker.failures = 0;
+      logCall({ tag, url: `${env.base}/v1/systemone`, request, response: json, http_status: res.status, attempts: attempt + 1, ms: Date.now() - t0 }, env.key);
       return parsed;
     } catch (err) {
-      if (err.fatal) { breaker.failures++; throw err; }
+      if (err.fatal) { breaker.failures++; logCall({ tag, url: `${env.base}/v1/systemone`, request, error: err.message, ms: Date.now() - t0 }, env.key); throw err; }
       lastErr = err.name === 'AbortError' ? new Error(`Jev timeout after ${env.timeout_ms} ms`) : err;
       if (/no data\.result|no answers|error code/.test(lastErr.message)) break;
     } finally { clearTimeout(timer); }
   }
   if (++breaker.failures >= BREAKER_FAILURES) breaker.open_until = Date.now() + BREAKER_COOLDOWN_MS;
+  logCall({ tag, url: `${env.base}/v1/systemone`, request, error: lastErr?.message || 'Jev call failed', ms: Date.now() - t0 }, env.key);
   throw new Error(scrub(lastErr?.message || 'Jev call failed', env.key));
 }
 
@@ -137,13 +154,13 @@ export const ENTRY_ACTIONS = {
   wait: 'No trade: no clear edge, conflicting timeframes, poor risk/reward or chop',
 };
 
-export function entryQuestions({ entry_threshold = 0.6 } = {}) {
+export function entryQuestions({ entry_threshold = 0.6, rules_hint = false } = {}) {
   return {
     action: { type: 'choice', threshold: entry_threshold, criteria: ENTRY_ACTIONS,
       instructions: 'You are a top 0.1% discretionary crypto futures trader. From the multi-timeframe OHLCV bars and indicator values in the state ' +
         '(1D, 1h, 15m, 5m, 1m: EMA 20/50/200 trend, market structure, RSI, ADX, ATR extension, Tillson T3 fast/slow, compression, relative volume, ' +
         'swing levels) decide the single best action now. Trade only with top-down alignment and room to the next opposing level for at least 2R. ' +
-        'The rules engine hint is only a second opinion. Prefer wait when in doubt.' },
+        (rules_hint ? 'The rules engine hint is only a second opinion. ' : '') + 'Prefer wait when in doubt.' },
     setup_quality: { type: 'score', threshold: 0.5, criteria: ['Poor', 'Weak', 'Average', 'Good', 'Excellent'],
       instructions: 'Rate the quality of the best available trade setup in this state (trend alignment, location, trigger, risk/reward, volatility).' },
   };
@@ -166,7 +183,7 @@ export function exitQuestions({ exit_threshold = 0.75 } = {}) {
 /** Entry decision → { action, dir, type, binding, confidence, quality, ... } */
 export async function jevEntry(state, cfgJev = {}) {
   const questions = entryQuestions(cfgJev);
-  const res = await callJev({ state, questions });
+  const res = await callJev({ state, questions, tag: `entry ${state.symbol || ''}`.trim() });
   const ev = evaluate(res.answers, questions);
   const act = ev.action, q = ev.setup_quality;
   const minQ = cfgJev.min_quality ?? 3;
@@ -185,7 +202,7 @@ export async function jevEntry(state, cfgJev = {}) {
 /** Exit decision → { action: hold | tighten | close, binding, confidence } */
 export async function jevExit(state, cfgJev = {}) {
   const questions = exitQuestions(cfgJev);
-  const res = await callJev({ state, questions });
+  const res = await callJev({ state, questions, tag: `exit ${state.position?.symbol || ''}`.trim() });
   const ev = evaluate(res.answers, questions).exit_action;
   let action = ev?.value || 'hold';
   if (action === 'close' && !ev.binding) action = 'hold';
