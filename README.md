@@ -23,10 +23,13 @@ Orders go to the broker connected in TradingView's Trading Panel (**Paper Tradin
   "risk_usdt": 100, "max_risk_usdt": 500, "rr": 2,
   "sl_atr_mult": 0.5, "atr_length": 14, "pivot_length": 3,
   "fee_rate": 0.0002, "slippage_rate": 0.0002, "allow_live": false,
-  "trailing": { "trail_atr_mult": 1.0, "min_gap_atr": 0.25, "min_step_atr": 0.1, "breakeven": true, "switch_chart": true },
+  "leverage": { "enabled": true, "min": 10, "max": 50, "vol_mult": 3, "sl_mult": 2, "maintenance_margin": 0.005 },
+  "trailing": { "trail_atr_mult": 1.0, "min_gap_atr": 0.25, "min_step_atr": 0.1, "breakeven": true, "switch_chart": true, "bars_source": "bybit", "atr_timeframe": "1" },
   "auto": { "min_score": 65, "min_bias": 0.35, "bars": 400 }
 }
 ```
+
+**Leverage** — chosen per order from the last hour's range (Bybit 1m klines): the target keeps the isolated liquidation distance ≈ 1/L − maintenance beyond `vol_mult`×1h range and `sl_mult`×stop distance, clamped to 10–50×. The order is refused only if even the minimum leverage would liquidate closer than `sl_mult`×stop. Leverage never changes the risk (qty is sized from the stop), only margin and liquidation price. It is applied via `setLeverage` where the broker supports it; TradingView Paper Trading does not, so the account leverage stays in effect there.
 
 **Safety**
 - Non-demo accounts are refused unless `"allow_live": true` or `TV_ALLOW_LIVE_TRADING=1`.

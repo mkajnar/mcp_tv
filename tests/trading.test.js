@@ -6,7 +6,7 @@
  */
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { planOrder, computeSwingAtr, computeTrailStop, roundToStep, parseSide } from '../src/core/trading.js';
+import { planOrder, computeSwingAtr, computeTrailStop, computeLeverage, roundToStep, parseSide } from '../src/core/trading.js';
 
 const MM = { fee_rate: 0.0002, slippage_rate: 0.0002, rr: 2, risk_usdt: 100 };
 
@@ -113,6 +113,44 @@ describe('computeTrailStop', () => {
     const r = computeTrailStop({ ...T, trail_atr_mult: 0.1, side: 1, entry: 100, price: 110, current_sl: 90, atr: 2, min_tick: 0.01 });
     assert.equal(r.basis, 'min_gap');
     assert.equal(r.new_sl, 109.5);
+  });
+});
+
+describe('computeLeverage', () => {
+  it('calm market → capped at max 50x', () => {
+    const r = computeLeverage({ vol_pct: 0.003, sl_pct: 0.0012 });
+    assert.equal(r.leverage, 50);
+    assert.ok(r.ok);
+  });
+
+  it('scales down with volatility', () => {
+    // 3 × 1.5% = 4.5% + 0.5% maintenance → 1/0.05 = 20x
+    assert.equal(computeLeverage({ vol_pct: 0.015, sl_pct: 0.005 }).leverage, 20);
+  });
+
+  it('a wide stop can dominate the volatility term', () => {
+    // max(3 × 0.5%, 2 × 3%) = 6% + 0.5% → 15x
+    assert.equal(computeLeverage({ vol_pct: 0.005, sl_pct: 0.03 }).leverage, 15);
+  });
+
+  it('high volatility only warns and falls back to the minimum', () => {
+    const r = computeLeverage({ vol_pct: 0.04, sl_pct: 0.01 });
+    assert.equal(r.ok, true);
+    assert.equal(r.leverage, 10);
+    assert.match(r.warning, /volatility wants/);
+  });
+
+  it('refuses when even the minimum leverage would liquidate before 2× the stop', () => {
+    const r = computeLeverage({ vol_pct: 0.01, sl_pct: 0.06 });
+    assert.equal(r.ok, false);
+    assert.match(r.reason, /Stop too wide/);
+  });
+
+  it('liquidation distance always covers the requirement when ok', () => {
+    for (const v of [0.001, 0.004, 0.01, 0.02, 0.03]) {
+      const r = computeLeverage({ vol_pct: v, sl_pct: v / 2 });
+      if (r.ok) assert.ok(r.liq_dist_pct >= r.required_liq_dist_pct - 1e-9);
+    }
   });
 });
 

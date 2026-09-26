@@ -8,6 +8,14 @@
   "fee_rate": 0.0002,
   "slippage_rate": 0.0002,
   "allow_live": false,
+  "leverage": {
+    "enabled": true,
+    "min": 10,
+    "max": 50,
+    "vol_mult": 3,
+    "sl_mult": 2,
+    "maintenance_margin": 0.005
+  },
   "trailing": {
     "trail_atr_mult": 1.0,
     "min_gap_atr": 0.25,

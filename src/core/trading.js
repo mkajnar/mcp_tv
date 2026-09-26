@@ -32,6 +32,14 @@ export const DEFAULT_CONFIG = {
   fee_rate: 0.0002,      // per side, applied to entry + exit price
   slippage_rate: 0.0002, // modelled the same way as fees
   allow_live: false,     // live (non-demo) accounts refused unless true or TV_ALLOW_LIVE_TRADING=1
+  leverage: {
+    enabled: true,
+    min: 10,               // leverage range chosen from the last hour's volatility
+    max: 50,
+    vol_mult: 3,           // liquidation must be further than vol_mult × 1h range …
+    sl_mult: 2,            // … and further than sl_mult × stop distance
+    maintenance_margin: 0.005,
+  },
   trailing: {
     trail_atr_mult: 1.0,   // ATR trail: SL = price ± trail_atr_mult * ATR
     min_gap_atr: 0.25,     // SL never closer to price than min_gap_atr * ATR
@@ -51,7 +59,7 @@ export function loadConfig() {
     if (!existsSync(p)) continue;
     try {
       const file = JSON.parse(readFileSync(p, 'utf8'));
-      Object.assign(cfg, file, { trailing: { ...cfg.trailing, ...(file.trailing || {}) } });
+      Object.assign(cfg, file, { trailing: { ...cfg.trailing, ...(file.trailing || {}) }, leverage: { ...cfg.leverage, ...(file.leverage || {}) } });
     }
     catch (err) { throw new Error(`Invalid JSON in ${p}: ${err.message}`); }
   }
@@ -198,6 +206,40 @@ export async function bybitQuote(symbol) {
     if (!t || !(+t.bid1Price > 0) || !(+t.ask1Price > 0)) return null;
     return { bid: +t.bid1Price, ask: +t.ask1Price, last: +t.lastPrice, source: 'bybit' };
   } catch { return null; }
+}
+
+/**
+ * Leverage from volatility: the calmer the last hour, the higher the leverage. The target keeps the
+ * (isolated) liquidation distance ≈ 1/L − maintenance beyond vol_mult × 1h range and sl_mult × stop
+ * distance, clamped to [min, max]. Hard refusal (ok=false) only when even `min` would put liquidation
+ * closer than sl_mult × stop distance; a volatility shortfall at `min` is only a warning.
+ */
+export function computeLeverage({ vol_pct, sl_pct, min = 10, max = 50, vol_mult = 3, sl_mult = 2, maintenance_margin = 0.005 }) {
+  const required = Math.max(vol_mult * vol_pct, sl_mult * sl_pct);
+  const cap = Math.floor(1 / (required + maintenance_margin) + 1e-9);
+  const leverage = Math.max(min, Math.min(max, cap));
+  const liqDist = 1 / leverage - maintenance_margin;
+  const ok = liqDist >= sl_mult * sl_pct - 1e-12;
+  const warning = ok && cap < min
+    ? `1h volatility wants < ${min}x; using ${min}x (liquidation ${(liqDist * 100).toFixed(2)}% away, ${vol_mult}×1h range is ${(vol_mult * vol_pct * 100).toFixed(2)}%)`
+    : null;
+  return {
+    leverage, ok, warning,
+    vol_1h_pct: Number((vol_pct * 100).toFixed(3)), sl_pct: Number((sl_pct * 100).toFixed(3)),
+    required_liq_dist_pct: Number((required * 100).toFixed(3)), liq_dist_pct: Number((liqDist * 100).toFixed(3)),
+    reason: ok
+      ? `${leverage}x: liquidation ~${(liqDist * 100).toFixed(2)}% away (target ${(required * 100).toFixed(2)}% = max(${vol_mult}×1h range, ${sl_mult}×SL ${(sl_pct * 100).toFixed(2)}%))`
+      : `Stop too wide for ${min}x: liquidation would be ${(liqDist * 100).toFixed(2)}% away, closer than ${sl_mult}×SL = ${(sl_mult * sl_pct * 100).toFixed(2)}%`,
+  };
+}
+
+/** High-low range of the last 60 closed 1m bars relative to the last close (Bybit perpetuals only). */
+export async function hourVolatility(symbol) {
+  const bars = await bybitBars(symbol, '1', 61);
+  if (!bars || bars.length < 30) return null;
+  const closed = bars.slice(0, -1);
+  const hi = Math.max(...closed.map(b => b.high)), lo = Math.min(...closed.map(b => b.low));
+  return (hi - lo) / closed.at(-1).close;
 }
 
 // ── Broker bridge ───────────────────────────────────────────────────────
@@ -377,6 +419,19 @@ export async function placeOrder(params = {}) {
   });
   if (plan.planned_risk > cfg.max_risk_usdt) throw new Error(`Planned risk ${plan.planned_risk} exceeds max_risk_usdt ${cfg.max_risk_usdt}`);
   plan.margin = si.margin_rate ? Number((plan.notional * si.margin_rate).toFixed(4)) : null;
+
+  let leverage = null;
+  if (cfg.leverage.enabled) {
+    const vol = await hourVolatility(symbol);
+    if (vol != null) {
+      leverage = computeLeverage({ vol_pct: vol, sl_pct: plan.dist / entry, ...cfg.leverage });
+      if (!leverage.ok) throw new Error(leverage.reason);
+      leverage.margin_at_leverage = Number((plan.notional / leverage.leverage).toFixed(4));
+      leverage.liquidation_price_est = Number((entry * (1 - side * (1 / leverage.leverage - cfg.leverage.maintenance_margin))).toFixed(8));
+    } else {
+      leverage = { leverage: null, reason: 'No 1h volatility data for this symbol — broker default leverage is used' };
+    }
+  }
   const available = account.summary['Available funds'];
   if (plan.margin != null && typeof available === 'number' && plan.margin > available) {
     throw new Error(`Required margin ${plan.margin} exceeds available funds ${available}`);
@@ -389,11 +444,23 @@ export async function placeOrder(params = {}) {
   if (plan.tp != null) order.takeProfit = plan.tp;
 
   const base = { symbol, type, account: { broker: account.broker, id: account.account_id, name: account.account_name, type: account.account_type },
-    quote, sl_basis: slBasis, plan, order };
+    quote, sl_basis: slBasis, plan, leverage, order };
 
   if (params.dry_run) {
     const logFile = logEvent({ event: 'dry_run', ...base });
     return { success: true, dry_run: true, ...base, log_file: logFile };
+  }
+
+  // Apply the chosen leverage where the broker supports it (TradingView Paper Trading does not — it keeps the account leverage)
+  if (leverage && leverage.leverage) {
+    try {
+      const res = await brokerEval(`
+        if (!b.config.supportLeverage) return { applied: false, note: 'Broker does not support setting leverage via API; account leverage ' + ${JSON.stringify(si.leverage || '')} + ' applies' };
+        var r = await b.setLeverage({ symbol: ${JSON.stringify(symbol)}, orderType: ${ORDER_TYPE[type]}, side: ${side}, leverage: ${leverage.leverage} });
+        return { applied: true, result: r };
+      `, 15000);
+      Object.assign(leverage, res);
+    } catch (err) { leverage.applied = false; leverage.note = `setLeverage failed: ${err.message}`; }
   }
 
   // Intent is logged before sending — a failed call must never be blindly retried
@@ -448,7 +515,10 @@ export async function setBrackets({ symbol, sl, tp } = {}) {
   const brackets = {};
   if (sl != null) {
     brackets.stopLoss = roundToStep(sl, ctx.symbol_info.min_tick);
-    const ref = side === -1 ? ctx.quote.ask : ctx.quote.bid;
+    // Check against both the quote and the position's last price and take the stricter one:
+    // a stale quote once let a stop be placed above the market (BRUSDT.P, 2026-09-26)
+    const refs = [side === -1 ? ctx.quote.ask : ctx.quote.bid, pos.last_price].filter(x => x > 0);
+    const ref = side === -1 ? Math.max(...refs) : Math.min(...refs);
     if (side === -1 ? brackets.stopLoss <= ref : brackets.stopLoss >= ref) throw new Error(`Stop loss ${brackets.stopLoss} is already through the market (${ref})`);
   } else if (pos.stop_loss != null) brackets.stopLoss = pos.stop_loss;
   if (tp != null) brackets.takeProfit = roundToStep(tp, ctx.symbol_info.min_tick);
@@ -505,7 +575,9 @@ export async function trailStops({ symbol, dry_run = false, trail_atr_mult, min_
     for (const pos of ctx.positions) {
       const side = pos.side === 'short' ? -1 : 1;
       const live = await bybitQuote(pos.symbol);
-      const price = side === -1 ? (live ? live.ask : pos.ask) : (live ? live.bid : pos.bid);
+      // Without a live quote use the stricter of the cached quote and the position's last price
+      const fallback = [side === -1 ? pos.ask : pos.bid, pos.last_price].filter(x => x > 0);
+      const price = live ? (side === -1 ? live.ask : live.bid) : (side === -1 ? Math.max(...fallback) : Math.min(...fallback));
       const base = { symbol: pos.symbol, side: pos.side, qty: pos.qty, entry: pos.avg_price, price, quote_source: live ? 'bybit' : 'tradingview', current_sl: pos.stop_loss ?? null };
       if (!(side === -1 ? price < pos.avg_price : price > pos.avg_price)) { results.push({ ...base, action: 'skip', reason: 'position is not in profit' }); continue; }
       let bars = tr.bars_source === 'bybit' ? await bybitBars(pos.symbol, tr.atr_timeframe) : null;
