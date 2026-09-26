@@ -1,0 +1,18 @@
+{
+  "risk_usdt": 100,
+  "max_risk_usdt": 500,
+  "rr": 2,
+  "sl_atr_mult": 0.5,
+  "atr_length": 14,
+  "pivot_length": 3,
+  "fee_rate": 0.0002,
+  "slippage_rate": 0.0002,
+  "allow_live": false,
+  "trailing": {
+    "trail_atr_mult": 1.0,
+    "min_gap_atr": 0.25,
+    "min_step_atr": 0.1,
+    "breakeven": true,
+    "switch_chart": true
+  }
+}

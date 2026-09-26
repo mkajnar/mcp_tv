@@ -80,6 +80,18 @@ Use `study_filter` parameter to target a specific indicator by name substring (e
 - `ui_fullscreen` → toggle fullscreen
 - `capture_screenshot` → take a screenshot (regions: "full", "chart", "strategy_tester")
 
+### "Place / manage orders" (Trading Panel broker — Paper Trading by default)
+Each call does the whole flow itself (account check → money management → guards → send → verify → audit log). Do NOT script orders through `ui_evaluate`.
+- `order_place` with just `side` → market order on the active chart symbol, qty sized from `risk_usdt`, SL = last confirmed swing ± `sl_atr_mult`×ATR, TP = `rr`×R. Override with `symbol`, `type` (market/limit/stop) + `price`, `qty`, `sl`, `tp`, `rr`, `dry_run`.
+- `positions_trail` → finds ALL open positions and tightens the SL of every one in profit (ATR trail from current price, break-even lock incl. fees, min gap/step). Never loosens a stop, never touches TP.
+- `order_status` → account summary, positions, working orders, active config
+- `position_set_brackets` → move SL/TP, `position_close` → flatten, `order_cancel` → cancel working orders
+- Money-management defaults live in `trading.json` (repo root, overridden by `~/.tradingview-mcp/trading.json`).
+- Live (non-demo) accounts are refused unless `"allow_live": true` or `TV_ALLOW_LIVE_TRADING=1`. Risk above `max_risk_usdt` is refused.
+- Every action is appended to `~/.tradingview-mcp/orders/YYYY-MM-DD.jsonl`. Never retry a failed `order_place` without `order_status` first.
+- ATR/swing are computed from the chart's current timeframe.
+- CLI without Claude: `tv order place sell`, `tv order trail`, `tv order trail --watch 30` (background loop), `tv order status|close|brackets|cancel`.
+
 ### "TradingView isn't running"
 - `tv_launch` → auto-detect and launch TradingView with CDP on Mac/Win/Linux
 - `tv_health_check` → verify connection is working

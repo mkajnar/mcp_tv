@@ -1,4 +1,44 @@
-# TradingView MCP Jackson
+# mcp_tv — TradingView MCP with order execution
+
+Fork of [tradingview-mcp-jackson](https://github.com/LewisWJackson/tradingview-mcp-jackson) (itself built on [tradingview-mcp](https://github.com/tradesdontlie/tradingview-mcp)). Everything below the next section is the upstream documentation.
+
+## Added in mcp_tv: order execution with money management
+
+Orders go to the broker connected in TradingView's Trading Panel (**Paper Trading by default — live accounts are refused** unless you opt in). Each tool does the whole flow in one call: account check → money management → guards → send → verify → audit log.
+
+| Tool | CLI | What it does |
+|---|---|---|
+| `order_place` | `tv order place sell` | Market/limit/stop order. Only `side` is required: qty is sized from `risk_usdt` (incl. fees + slippage), SL = last confirmed swing ± `sl_atr_mult`×ATR, TP = `rr`×R. Everything can be overridden; `dry_run` computes only. |
+| `positions_trail` | `tv order trail [--watch 5]` | Finds **all** open positions and tightens the SL of every one in profit: ATR trail from current price + break-even lock incl. fees, min gap and min step. Never loosens a stop, never touches TP. `--watch N` repeats every N seconds. |
+| `order_status` | `tv order status` | Account summary, positions, working orders, active config |
+| `position_set_brackets` | `tv order brackets --sl X --tp Y` | Move SL/TP of an open position |
+| `position_close` | `tv order close` | Close a position at market |
+| `order_cancel` | `tv order cancel [--id N]` | Cancel working orders |
+
+**Config** — `trading.json` in the repo root (overridden by `~/.tradingview-mcp/trading.json`):
+
+```json
+{
+  "risk_usdt": 100, "max_risk_usdt": 500, "rr": 2,
+  "sl_atr_mult": 0.5, "atr_length": 14, "pivot_length": 3,
+  "fee_rate": 0.0002, "slippage_rate": 0.0002, "allow_live": false,
+  "trailing": { "trail_atr_mult": 1.0, "min_gap_atr": 0.25, "min_step_atr": 0.1, "breakeven": true, "switch_chart": true }
+}
+```
+
+**Safety**
+- Non-demo accounts are refused unless `"allow_live": true` or `TV_ALLOW_LIVE_TRADING=1`.
+- Risk above `max_risk_usdt` is refused; adding to an existing position requires `allow_add`.
+- Every action is appended to `~/.tradingview-mcp/orders/YYYY-MM-DD.jsonl`; the submit intent is logged before sending. Never retry a failed `order_place` without checking `order_status`.
+- ATR and swings are computed from the chart's current timeframe. Positions on other symbols are read by briefly switching the chart (disable with `switch_chart: false` / `--no-switch`).
+
+**Windows Store build of TradingView** — `tv_launch` does not find the Store (Appx) install. Use `scripts/launch-tv-cdp.ps1`: it locates the package via `Get-AppxPackage`, kills running instances (single-instance lock) and starts TradingView with `--remote-debugging-port=9222`.
+
+Money-management unit tests: `node --test tests/trading.test.js`.
+
+---
+
+# TradingView MCP Jackson (upstream documentation)
 
 If you found this from the YouTube video — welcome. This is the improved fork. Everything you need is below.
 
