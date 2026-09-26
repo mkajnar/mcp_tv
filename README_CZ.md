@@ -153,6 +153,32 @@ Výchozí odpověď je **WAIT**. Obchoduje se jen při souhlasu všech pravidel.
 
 Indikátor „MKA Multi“ (RSI, MACD, swingy, T3 FAST/SLOW) kreslí signály T3 L, T3 S, exit L a exit S a má alerty. Soubor je v repu: [`pine/milan_macd_rsi_swings.pine`](pine/milan_macd_rsi_swings.pine). Stejné T3 parametry používá i autoorder. Nahraješ ho přes AI: „otevři Pine editor, vlož skript a zkompiluj“ (`pine_set_source`, `pine_smart_compile`).
 
+## 9b. Rozhodování přes Jev AI (volitelné, zap/vyp)
+
+[Jev AI](https://thejevai.com) (`POST /v1/systemone`, model `typesafe/jev-1.13`) může převzít **rozhodování**: kterým směrem a jakým typem objednávky vstoupit a jestli otevřenou pozici držet, utáhnout SL nebo zavřít. Pravidla dál počítají SL, velikost, páku a všechny pojistky.
+
+- **Nastavení:** do `.env` v kořeni repa dej `JEV_API_KEY=...`. Soubor je v `.gitignore`. Volitelně můžeš nastavit i `JEV_API_BASE_URL`, `JEV_MODEL`, `JEV_TIMEOUT` a `JEV_MAX_RETRIES`. Klíč se nikdy neloguje ani nevrací.
+- **Zapnutí a vypnutí:**
+  - řekni AI *„zapni Jev“* (`jev_toggle enabled=true`);
+  - z CLI `tv order jev on|off|status`;
+  - nebo v `trading.json` nastav `"jev": { "enabled": true }`.
+  - Pro jedno volání: `autoorder jev=true|false`, v CLI `--jev` / `--no-jev`.
+- **Vstupy (autoorder):**
+  - Jev dostane state: indikátory pro každý timeframe, T3, swingy, posledních 20 svíček OHLCV z 1D/1h/15m/5m/1m, aktuální cenu a názor pravidel.
+  - Položí se mu dvě otázky: `action` (choice: long/short × market/limit/stop, nebo wait) a `setup_quality` (score 1–5).
+  - Obchod se zadá, jen když má `action` jistotu ≥ `jev.entry_threshold` (0.6) a kvalita je ≥ `jev.min_quality` (3).
+  - Vstupní cenu pro zvolený typ, strukturální SL, pojistky proti příliš širokému nebo těsnému stopu a podmínku ≥ rr·R místa řeší pravidla. Zadání pak jde přes `order_place` s money managementem.
+- **Výstupy (trail smyčka):**
+  - Při zapnutém `jev.exits` se JEV u každé pozice zeptá na `exit_action` (hold / tighten / close), a to nejvýš jednou za `jev.exit_interval_s` (60 s).
+  - `close` vyžaduje jistotu ≥ `jev.exit_threshold` (0.75).
+  - `tighten` posune SL aspoň na break-even a nikdy ho nepovolí.
+  - ATR trail a T3 exit běží dál jako záchranná síť.
+- **Výpadky JEV:**
+  - Při 429, 5xx nebo timeoutu se volání opakuje s rostoucím odstupem.
+  - Po 3 chybách se JEV na 10 minut vypne; při 401 nebo 402 hned.
+  - S `jev.fallback: "rules"` (výchozí) autoorder pak použije playbook pravidel, s `"wait"` obchod vynechá.
+- **Log:** každá odpověď JEV (akce, jistota, pravděpodobnosti, spotřebované kredity) se zapíše do audit logu a vrátí se ve výsledku pod klíčem `jev`.
+
 ## 10. Logy a řešení problémů
 
 - **Audit log:** `~/.tradingview-mcp/orders/YYYY-MM-DD.jsonl` obsahuje rozhodnutí, záměry, vyplnění a posuny SL.

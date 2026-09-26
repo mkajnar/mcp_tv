@@ -31,13 +31,15 @@ export function registerTradingTools(server) {
     'Give it a ticker and it does the rest: loads the chart, reads 1D/1h/15m/5m/1m (trend, structure, momentum, extension, compression, levels), ' +
     'decides like a disciplined top-down trader whether to trade at all and which order type (market / limit on pullback / stop on breakout), ' +
     'places a structural SL and sizes the order by money management via order_place. Default is WAIT unless confluence score >= min_score. ' +
-    'Returns the decision with reasons and a per-timeframe summary.', {
+    'Returns the decision with reasons and a per-timeframe summary. With Jev AI on (jev_toggle / trading.json jev.enabled or jev=true) ' +
+    'Jev decides direction and order type from the OHLCV + indicator state; SL, guards and sizing stay rule-based.', {
     symbol: z.string().describe('Ticker, preferably with exchange, e.g. BYBIT:BTCUSDT.P'),
     dry_run: z.boolean().optional().describe('Analyse and plan, but do not send the order'),
     risk_usdt: z.coerce.number().optional().describe('Override risk per trade (default trading.json)'),
     min_score: z.coerce.number().optional().describe('Minimum confluence score 0-100 to trade (default trading.json auto.min_score)'),
     min_bias: z.coerce.number().optional().describe('Minimum weighted top-down bias 0-1 (default trading.json auto.min_bias)'),
     screenshot: z.boolean().optional().describe('Capture a 5m screenshot after the decision (default true); path returned in screenshot'),
+    jev: z.boolean().optional().describe('Force Jev AI on (true) or off (false) for this call; default trading.json jev.enabled'),
   }, async (params) => {
     try { return jsonResult(await auto.autoOrder(params)); }
     catch (err) { return jsonResult({ success: false, error: err.message }, true); }
@@ -77,8 +79,23 @@ export function registerTradingTools(server) {
     breakeven: z.boolean().optional().describe('Consider break-even (entry ± fees) as a candidate'),
     switch_chart: z.boolean().optional().describe('Allow switching the chart to read bars for other symbols'),
     dry_run: z.boolean().optional().describe('Compute only, do not move stops'),
+    jev: z.boolean().optional().describe('false = skip Jev exit decisions for this call (they run only when jev.enabled and jev.exits)'),
   }, async (params) => {
     try { return jsonResult(await core.trailStops(params)); }
+    catch (err) { return jsonResult({ success: false, error: err.message }, true); }
+  });
+
+  server.tool('jev_toggle',
+    'Switch Jev AI decisions on or off (entries in autoorder, exits in positions_trail / the trail loop). Persists to ~/.tradingview-mcp/trading.json; the running trail loop picks it up on its next tick.', {
+    enabled: z.boolean().describe('true = Jev decides entries/exits, false = rule-based playbook only'),
+    exits: z.boolean().optional().describe('Also let Jev decide exits (hold / tighten / close) — default unchanged'),
+  }, async ({ enabled, exits }) => {
+    try { return jsonResult(core.setJev({ enabled, exits })); }
+    catch (err) { return jsonResult({ success: false, error: err.message }, true); }
+  });
+
+  server.tool('jev_status', 'Jev AI status: enabled, exits, API key present (never the value), model, circuit breaker', {}, async () => {
+    try { return jsonResult({ success: true, ...core.jevInfo() }); }
     catch (err) { return jsonResult({ success: false, error: err.message }, true); }
   });
 

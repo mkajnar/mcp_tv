@@ -15,6 +15,15 @@
     "slow": 21,
     "factor": 0.7
   },
+  "jev": {
+    "enabled": false,
+    "exits": true,
+    "entry_threshold": 0.6,
+    "min_quality": 3,
+    "exit_threshold": 0.75,
+    "exit_interval_s": 60,
+    "fallback": "rules"
+  },
   "leverage": {
     "enabled": true,
     "min": 10,

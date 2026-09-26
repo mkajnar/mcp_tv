@@ -39,11 +39,14 @@ register('order', {
         'min-bias': { type: 'string', description: 'Minimum weighted top-down bias 0-1' },
         'dry-run': { type: 'boolean', short: 'n', description: 'Analyse and plan only' },
         'no-screenshot': { type: 'boolean', description: 'Skip the 5m screenshot' },
+        jev: { type: 'boolean', description: 'Force Jev AI decision on for this call' },
+        'no-jev': { type: 'boolean', description: 'Force the rule-based playbook for this call' },
       },
       handler: (opts, positionals) => {
         if (!positionals[0]) throw new Error('Symbol required. Usage: tv order auto BYBIT:BTCUSDT.P');
         return auto.autoOrder({ symbol: positionals[0], risk_usdt: num(opts.risk), min_score: num(opts['min-score']),
-          min_bias: num(opts['min-bias']), dry_run: !!opts['dry-run'], screenshot: !opts['no-screenshot'] });
+          min_bias: num(opts['min-bias']), dry_run: !!opts['dry-run'], screenshot: !opts['no-screenshot'],
+          jev: opts['no-jev'] ? false : opts.jev ? true : undefined });
       },
     }],
     ['status', {
@@ -76,10 +79,12 @@ register('order', {
         'no-switch': { type: 'boolean', description: 'Never switch the chart (skip positions on other symbols)' },
         watch: { type: 'string', short: 'w', description: 'Repeat every N seconds' },
         'dry-run': { type: 'boolean', short: 'n', description: 'Compute only' },
+        'no-jev': { type: 'boolean', description: 'Skip Jev exit decisions' },
       },
       handler: async (opts) => {
         const params = {
           symbol: opts.symbol, trail_atr_mult: num(opts.atr), min_gap_atr: num(opts.gap), min_step_atr: num(opts.step), dry_run: !!opts['dry-run'],
+          jev: opts['no-jev'] ? false : undefined,
           breakeven: opts['no-breakeven'] ? false : undefined, switch_chart: opts['no-switch'] ? false : undefined,
         };
         const every = num(opts.watch);
@@ -90,7 +95,7 @@ register('order', {
             const r = await core.trailStops(params);
             for (const row of r.results) {
               console.log(JSON.stringify({ ts: new Date().toISOString(), symbol: row.symbol, action: row.action, price: row.price,
-                current_sl: row.current_sl, new_sl: row.new_sl, basis: row.basis, applied: row.applied, locked_profit: row.locked_profit, reason: row.reason, error: row.error }));
+                current_sl: row.current_sl, new_sl: row.new_sl, basis: row.basis, applied: row.applied, locked_profit: row.locked_profit, reason: row.reason, jev: row.jev, error: row.error }));
             }
             if (!r.results.length) console.log(JSON.stringify({ ts: new Date().toISOString(), message: r.message }));
           } catch (err) {
@@ -98,6 +103,16 @@ register('order', {
           }
           await new Promise(res => setTimeout(res, every * 1000));
         }
+      },
+    }],
+    ['jev', {
+      description: 'Jev AI decisions: tv order jev on|off|status [--no-exits]',
+      options: { 'no-exits': { type: 'boolean', description: 'With "on": Jev decides entries only' } },
+      handler: (opts, positionals) => {
+        const cmd = (positionals[0] || 'status').toLowerCase();
+        if (cmd === 'status') return { success: true, ...core.jevInfo() };
+        if (cmd !== 'on' && cmd !== 'off') throw new Error('Usage: tv order jev on|off|status');
+        return core.setJev({ enabled: cmd === 'on', exits: cmd === 'on' ? !opts['no-exits'] : undefined });
       },
     }],
     ['cancel', {

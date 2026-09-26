@@ -9,7 +9,8 @@ import { evaluateAsync } from '../connection.js';
 import { getOhlcv } from './data.js';
 import { setSymbol } from './chart.js';
 import { t3State } from './ta.js';
-import { existsSync, readFileSync, mkdirSync, appendFileSync } from 'node:fs';
+import { jevExit, jevStatus } from './jev.js';
+import { existsSync, readFileSync, mkdirSync, appendFileSync, writeFileSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -44,6 +45,8 @@ export const DEFAULT_CONFIG = {
     sl_mult: 2,            // … and further than sl_mult × stop distance
     maintenance_margin: 0.005,
   },
+  // Jev AI decides entries (direction + order type) and exits (hold / tighten / close). Toggle with `tv order jev on|off`.
+  jev: { enabled: false, exits: true, entry_threshold: 0.6, min_quality: 3, exit_threshold: 0.75, exit_interval_s: 60, fallback: 'rules' },
   trailing: {
     activate_r: 1,         // leave the original stop alone until the trade is +activate_r·R, then at least break-even
     t3_exit: true,         // close the position when T3 FAST crosses T3 SLOW against it on the last closed bar (atr_timeframe)
@@ -65,7 +68,7 @@ export function loadConfig() {
     if (!existsSync(p)) continue;
     try {
       const file = JSON.parse(readFileSync(p, 'utf8'));
-      Object.assign(cfg, file, { trailing: { ...cfg.trailing, ...(file.trailing || {}) }, leverage: { ...cfg.leverage, ...(file.leverage || {}) }, t3: { ...cfg.t3, ...(file.t3 || {}) } });
+      Object.assign(cfg, file, { trailing: { ...cfg.trailing, ...(file.trailing || {}) }, leverage: { ...cfg.leverage, ...(file.leverage || {}) }, t3: { ...cfg.t3, ...(file.t3 || {}) }, jev: { ...cfg.jev, ...(file.jev || {}) } });
     }
     catch (err) { throw new Error(`Invalid JSON in ${p}: ${err.message}`); }
   }
@@ -73,6 +76,18 @@ export function loadConfig() {
   if (process.env.TV_MAX_RISK_USDT) cfg.max_risk_usdt = Number(process.env.TV_MAX_RISK_USDT);
   return cfg;
 }
+
+/** Switch Jev on/off (and optionally exits) in ~/.tradingview-mcp/trading.json — the trail loop picks it up on its next tick. */
+export function setJev({ enabled, exits } = {}) {
+  const p = join(USER_DATA_DIR, 'trading.json');
+  mkdirSync(USER_DATA_DIR, { recursive: true });
+  const file = existsSync(p) ? JSON.parse(readFileSync(p, 'utf8')) : {};
+  file.jev = { ...(file.jev || {}), ...(enabled != null ? { enabled: !!enabled } : {}), ...(exits != null ? { exits: !!exits } : {}) };
+  writeFileSync(p, JSON.stringify(file, null, 2) + '\n');
+  return { success: true, file: p, ...jevStatus(loadConfig().jev) };
+}
+
+export function jevInfo() { return jevStatus(loadConfig().jev); }
 
 // ── Pure helpers (unit tested) ──────────────────────────────────────────
 
@@ -569,13 +584,45 @@ export async function setBrackets({ symbol, sl, tp } = {}) {
   return result;
 }
 
+// Jev exit answers per symbol, reused for jev.exit_interval_s so a 5 s trail loop does not burn credits
+const jevCache = new Map();
+
+async function jevExitCached(pos, { bars, price, side, cfg }) {
+  const hit = jevCache.get(pos.symbol);
+  if (hit && Date.now() - hit.ts < (cfg.jev.exit_interval_s ?? 60) * 1000) return { ...hit.res, cached: true };
+  const r = (x) => (x == null || !Number.isFinite(x) ? x : Number(x.toPrecision(6)));
+  const closed = bars.slice(0, -1);
+  const b15 = await bybitBars(pos.symbol, '15', 300).catch(() => null);
+  const b60 = await bybitBars(pos.symbol, '60', 300).catch(() => null);
+  const riskDist = pos.stop_loss == null ? null : Math.abs(pos.avg_price - pos.stop_loss);
+  const tfState = (bs) => bs && bs.length > 60 ? {
+    atr: r(computeAtr(bs, cfg.atr_length)), t3: t3State(bs.slice(0, -1).map(b => b.close), { ...cfg.t3, recent: 3 }),
+    last_bars_ohlcv: bs.slice(-20).map(b => [r(b.open), r(b.high), r(b.low), r(b.close), r(b.volume)]) } : null;
+  const state = {
+    position: { symbol: pos.symbol, side: pos.side, entry: pos.avg_price, stop_loss: pos.stop_loss ?? null, take_profit: pos.take_profit ?? null,
+      price, unrealized_pnl: pos.pl ?? null, r_multiple: riskDist ? r((price - pos.avg_price) * side / riskDist) : null },
+    ohlcv_columns: ['open', 'high', 'low', 'close', 'volume'],
+    timeframes: { '5m': tfState(closed.length ? bars : null), '15m': tfState(b15), '1h': tfState(b60) },
+  };
+  try {
+    const res = await jevExit(state, cfg.jev);
+    jevCache.set(pos.symbol, { ts: Date.now(), res });
+    logEvent({ event: 'jev_exit_decision', symbol: pos.symbol, decision: res });
+    return { ...res, cached: false };
+  } catch (err) {
+    jevCache.set(pos.symbol, { ts: Date.now(), res: { error: err.message } });
+    return { error: err.message };
+  }
+}
+
 /**
  * Tighten the stop of every open position that is in profit (or only `symbol`).
  * Bars for ATR come from the active chart; positions on other symbols are read by
  * temporarily switching the chart (restored afterwards) unless switch_chart is false.
  */
-export async function trailStops({ symbol, dry_run = false, trail_atr_mult, min_gap_atr, min_step_atr, breakeven, switch_chart, bars_source } = {}) {
+export async function trailStops({ symbol, dry_run = false, trail_atr_mult, min_gap_atr, min_step_atr, breakeven, switch_chart, bars_source, jev: jevOverride } = {}) {
   const cfg = loadConfig();
+  const jcfg = cfg.jev || {};
   const tr = {
     activate_r: cfg.trailing.activate_r,
     t3_exit: cfg.trailing.t3_exit,
@@ -586,6 +633,7 @@ export async function trailStops({ symbol, dry_run = false, trail_atr_mult, min_
     switch_chart: switch_chart ?? cfg.trailing.switch_chart,
     bars_source: bars_source ?? cfg.trailing.bars_source,
     atr_timeframe: cfg.trailing.atr_timeframe,
+    jev_exits: !!(jcfg.enabled && jcfg.exits && (jevOverride ?? true)),
   };
   const ctx = await brokerEval(`
     ${ACCOUNT_JS}
@@ -636,6 +684,43 @@ export async function trailStops({ symbol, dry_run = false, trail_atr_mult, min_
           }
           results.push(row);
           continue;
+        }
+      }
+      // Jev exit decision (throttled per symbol); deterministic trail + T3 exit stay as the safety net
+      if (jcfg.enabled && jcfg.exits && (jevOverride ?? true)) {
+        const j = await jevExitCached(pos, { bars, price, side, cfg });
+        if (j.error) base.jev = { error: j.error };
+        else {
+          base.jev = { action: j.action, confidence: j.confidence, cached: j.cached };
+          if (j.action === 'close') {
+            const row = { ...base, action: 'jev_exit', reason: `Jev: close (confidence ${j.confidence?.toFixed(2)})` };
+            if (!dry_run) {
+              try { const res = await closePosition({ symbol: pos.symbol }); row.applied = res.verified; jevCache.delete(pos.symbol); }
+              catch (err) { row.applied = false; row.error = err.message; }
+            }
+            results.push(row);
+            continue;
+          }
+          if (j.action === 'tighten' && inProfit) {
+            // At least break-even incl. fees, never looser than the current stop, keep a min gap to price
+            const atr0 = computeAtr(bars, cfg.atr_length);
+            const be = pos.avg_price * (1 + side * 2 * cfg.fee_rate);
+            const trail = price - side * tr.trail_atr_mult * atr0;
+            let target = side === 1 ? Math.max(be, trail) : Math.min(be, trail);
+            const maxAllowed = price - side * tr.min_gap_atr * atr0;
+            target = side === 1 ? Math.min(target, maxAllowed) : Math.max(target, maxAllowed);
+            target = roundToStep(target, pos.min_tick, side === 1 ? 'floor' : 'ceil');
+            const better = pos.stop_loss == null || (side === 1 ? target > pos.stop_loss : target < pos.stop_loss);
+            if (better && (side === 1 ? target < price : target > price)) {
+              const row = { ...base, action: 'jev_tighten', new_sl: target, reason: `Jev: tighten (confidence ${j.confidence?.toFixed(2)})` };
+              if (!dry_run) {
+                try { const res = await setBrackets({ symbol: pos.symbol, sl: target }); row.applied = res.verified; }
+                catch (err) { row.applied = false; row.error = err.message; }
+              }
+              results.push(row);
+              continue;
+            }
+          }
         }
       }
       if (!inProfit) { results.push({ ...base, action: 'skip', reason: 'position is not in profit' }); continue; }

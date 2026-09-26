@@ -20,6 +20,7 @@ import { getOhlcv } from './data.js';
 import { setSymbol, setTimeframe, resetView } from './chart.js';
 import { captureScreenshot } from './capture.js';
 import { ema, t3State } from './ta.js';
+import { jevEntry } from './jev.js';
 
 export { ema };
 import { computeAtr, loadConfig, placeOrder, status, symbolSpec, roundToStep, logEvent, stopTooTight } from './trading.js';
@@ -210,29 +211,9 @@ export function decide(a, { bid, ask, min_tick, rr = 2, min_score = AUTO_DEFAULT
   if (type !== 'market') entry = roundToStep(entry, min_tick, (dir === 1) === (type === 'limit') ? 'floor' : 'ceil');
   reasons.push(why);
 
-  // Structural stop behind the most recent 5m swing beyond entry, buffered by 0.5 ATR(5m)
-  if (slRaw == null) {
-    const beyond = dir === 1 ? m5.swing_lows.filter(p => p < entry) : m5.swing_highs.filter(p => p > entry);
-    if (beyond.length) { slRaw = beyond.at(-1) - dir * 0.5 * m5.atr; slBasis = '5m swing ± 0.5 ATR'; }
-    else { slRaw = entry - dir * 1.5 * m15.atr; slBasis = '1.5 ATR(15m)'; }
-  }
-  if (Math.abs(entry - slRaw) < 0.5 * m5.atr) { slRaw = entry - dir * 0.5 * m5.atr; slBasis += ' (widened to 0.5 ATR(5m))'; }
-  const sl = roundToStep(slRaw, min_tick, dir === 1 ? 'floor' : 'ceil');
-  const dist = Math.abs(entry - sl);
-  const plan = { side, type, entry, sl, sl_basis: slBasis, dist: Number(dist.toFixed(8)) };
-  if (dist > 3 * m15.atr) return wait(`Structural stop too wide: ${(dist / m15.atr).toFixed(1)} ATR(15m) > 3`, { plan });
-  const tight = stopTooTight({ entry, dist, cost_per_unit: cost_rate * (entry + sl), min_sl_pct, max_cost_share });
-  if (tight) return wait(`${tight} — market too quiet for a money-managed stop`, { plan });
-
-  // Room to the next opposing level: 1h / 15m swings and the previous daily high/low.
-  // Levels the market has already broken (between a pending entry and the current price) are not obstacles.
-  const beyondFrom = dir === 1 ? Math.max(entry, ask) : Math.min(entry, bid);
-  const levels = dir === 1
-    ? [...a['1h'].swing_highs, ...m15.swing_highs, a['1d'].last_bar.high].filter(p => p > beyondFrom + 0.1 * m5.atr)
-    : [...a['1h'].swing_lows, ...m15.swing_lows, a['1d'].last_bar.low].filter(p => p < beyondFrom - 0.1 * m5.atr);
-  const nearest = levels.length ? (dir === 1 ? Math.min(...levels) : Math.max(...levels)) : null;
-  const roomR = nearest == null ? Infinity : Math.abs(nearest - entry) / dist;
-  if (roomR < rr) return wait(`Only ${roomR.toFixed(2)}R of room to the next ${dir === 1 ? 'resistance' : 'support'} ${nearest} — need ${rr}R`, { plan });
+  const fin = finishPlan(a, { dir, type, entry, slRaw, slBasis, bid, ask, min_tick, rr, cost_rate, min_sl_pct, max_cost_share });
+  if (!fin.ok) return wait(fin.why, { plan: fin.plan });
+  const { plan, nearest, roomR } = fin;
   reasons.push(nearest == null ? 'No opposing level in range (open space)' : `${roomR.toFixed(2)}R of room to the next level ${nearest}`);
 
   const t3Pts = (m15.t3 && m15.t3.bull === (dir === 1) ? 4 : 0) + (m5.t3 && m5.t3.bull === (dir === 1) ? 3 : 0) + (t3Trigger ? 3 : 0);
@@ -249,6 +230,88 @@ export function decide(a, { bid, ask, min_tick, rr = 2, min_score = AUTO_DEFAULT
   const extra = { plan, score, score_breakdown: sc, trending, nearest_level: nearest, room_r: Number.isFinite(roomR) ? Number(roomR.toFixed(2)) : null };
   if (score < min_score) return wait(`Confluence score ${score} < ${min_score}`, extra);
   return { ...base, action: 'trade', ...plan, reasons, ...extra };
+}
+
+/**
+ * Shared tail of every plan (rules or Jev): structural SL, stop width / cost guards and room to the next level.
+ * Returns { ok, plan, nearest, roomR } or { ok: false, why, plan }.
+ */
+export function finishPlan(a, { dir, type, entry, slRaw = null, slBasis = null, bid, ask, min_tick, rr = 2, cost_rate = 0.0004, min_sl_pct = 0.0015, max_cost_share = 0.3 }) {
+  const m15 = a['15m'], m5 = a['5m'];
+  const side = dir === 1 ? 'long' : 'short';
+  // Structural stop behind the most recent 5m swing beyond entry, buffered by 0.5 ATR(5m)
+  if (slRaw == null) {
+    const beyond = dir === 1 ? m5.swing_lows.filter(p => p < entry) : m5.swing_highs.filter(p => p > entry);
+    if (beyond.length) { slRaw = beyond.at(-1) - dir * 0.5 * m5.atr; slBasis = '5m swing ± 0.5 ATR'; }
+    else { slRaw = entry - dir * 1.5 * m15.atr; slBasis = '1.5 ATR(15m)'; }
+  }
+  if (Math.abs(entry - slRaw) < 0.5 * m5.atr) { slRaw = entry - dir * 0.5 * m5.atr; slBasis += ' (widened to 0.5 ATR(5m))'; }
+  const sl = roundToStep(slRaw, min_tick, dir === 1 ? 'floor' : 'ceil');
+  const dist = Math.abs(entry - sl);
+  const plan = { side, type, entry, sl, sl_basis: slBasis, dist: Number(dist.toFixed(8)) };
+  if (dist > 3 * m15.atr) return { ok: false, plan, why: `Structural stop too wide: ${(dist / m15.atr).toFixed(1)} ATR(15m) > 3` };
+  const tight = stopTooTight({ entry, dist, cost_per_unit: cost_rate * (entry + sl), min_sl_pct, max_cost_share });
+  if (tight) return { ok: false, plan, why: `${tight} — market too quiet for a money-managed stop` };
+
+  // Room to the next opposing level: 1h / 15m swings and the previous daily high/low.
+  // Levels the market has already broken (between a pending entry and the current price) are not obstacles.
+  const beyondFrom = dir === 1 ? Math.max(entry, ask) : Math.min(entry, bid);
+  const levels = dir === 1
+    ? [...a['1h'].swing_highs, ...m15.swing_highs, a['1d'].last_bar.high].filter(p => p > beyondFrom + 0.1 * m5.atr)
+    : [...a['1h'].swing_lows, ...m15.swing_lows, a['1d'].last_bar.low].filter(p => p < beyondFrom - 0.1 * m5.atr);
+  const nearest = levels.length ? (dir === 1 ? Math.min(...levels) : Math.max(...levels)) : null;
+  const roomR = nearest == null ? Infinity : Math.abs(nearest - entry) / dist;
+  if (roomR < rr) return { ok: false, plan, why: `Only ${roomR.toFixed(2)}R of room to the next ${dir === 1 ? 'resistance' : 'support'} ${nearest} — need ${rr}R` };
+  return { ok: true, plan, nearest, roomR };
+}
+
+/**
+ * Entry price for an order type chosen by Jev (same conventions as the playbook):
+ * market = ask/bid, limit = nearest EMA20 pullback (5m, else 15m), stop = 5m range edge when
+ * compressed, otherwise beyond the 1m trigger bars. Returns { type, entry, slRaw, slBasis, note }.
+ */
+export function entryForType(a, { dir, type, bid, ask, min_tick }) {
+  const m15 = a['15m'], m5 = a['5m'], m1 = a['1m'];
+  const market = dir === 1 ? ask : bid;
+  let entry, slRaw = null, slBasis = null, note = '';
+  if (type === 'limit') {
+    const cands = [m5.ema20, m15.ema20].filter(p => p != null && (dir === 1 ? p < ask : p > bid));
+    entry = cands.length ? cands[0] : market;
+    if (!cands.length) { type = 'market'; note = 'EMA20 already reached → market'; }
+  } else if (type === 'stop') {
+    if (m5.compressed) {
+      entry = (dir === 1 ? m5.range.high : m5.range.low) + dir * 0.1 * m5.atr;
+      slRaw = (dir === 1 ? m5.range.low : m5.range.high) - dir * 0.25 * m5.atr; slBasis = '5m range edge';
+    } else {
+      entry = dir === 1 ? Math.max(m1.last_bar.high, m1.prev_bar.high) + 0.1 * m1.atr : Math.min(m1.last_bar.low, m1.prev_bar.low) - 0.1 * m1.atr;
+    }
+    if (dir === 1 ? entry <= ask : entry >= bid) { type = 'market'; entry = market; slRaw = null; slBasis = null; note = 'trigger already crossed → market'; }
+  } else { type = 'market'; entry = market; }
+  if (type !== 'market') entry = roundToStep(entry, min_tick, (dir === 1) === (type === 'limit') ? 'floor' : 'ceil');
+  return { type, entry, slRaw, slBasis, note };
+}
+
+/** Minimal facts for Jev: per timeframe indicators + last 20 OHLCV bars, quote and the rules' opinion. */
+export function buildJevState({ symbol, analysis, bars, quote, ruleDecision }) {
+  const r = (x) => (x == null || !Number.isFinite(x) ? x : Number(x.toPrecision(6)));
+  const tfs = {};
+  for (const tf of TIMEFRAMES) {
+    const t = analysis[tf.key];
+    tfs[tf.key] = {
+      ...summarize(t),
+      swing_highs: t.swing_highs.map(r), swing_lows: t.swing_lows.map(r),
+      range: { high: r(t.range.high), low: r(t.range.low), size_atr: r(t.range.size_atr) },
+      t3: t.t3 ? { fast: r(t.t3.fast), slow: r(t.t3.slow), bull: t.t3.bull, cross: t.t3.cross, cross_bars_ago: t.t3.cross_bars_ago } : null,
+      last_bars_ohlcv: (bars[tf.key] || []).slice(-20).map(b => [r(b.open), r(b.high), r(b.low), r(b.close), r(b.volume)]),
+    };
+  }
+  return {
+    symbol, quote: { bid: quote.bid, ask: quote.ask },
+    ohlcv_columns: ['open', 'high', 'low', 'close', 'volume'],
+    timeframes: tfs,
+    rules_engine_hint: ruleDecision ? { action: ruleDecision.action, side: ruleDecision.side, type: ruleDecision.type ?? null,
+      score: ruleDecision.score ?? null, last_reason: ruleDecision.reasons?.at(-1) ?? null } : null,
+  };
 }
 
 // ── Orchestration ───────────────────────────────────────────────────────
@@ -291,7 +354,7 @@ function summarize(t) {
  * place it through placeOrder (money management + guards). A 5m screenshot is taken
  * after the decision. The symbol stays on the chart; the original timeframe is restored.
  */
-export async function autoOrder({ symbol, dry_run = false, risk_usdt, min_score, min_bias, screenshot = true } = {}) {
+export async function autoOrder({ symbol, dry_run = false, risk_usdt, min_score, min_bias, screenshot = true, jev } = {}) {
   if (!symbol) throw new Error('symbol is required (e.g. BYBIT:BTCUSDT.P)');
   const cfg = loadConfig();
   const auto = { ...AUTO_DEFAULTS, ...(cfg.auto || {}) };
@@ -323,14 +386,45 @@ export async function autoOrder({ symbol, dry_run = false, risk_usdt, min_score,
 
   const analysis = {};
   try {
-    for (const tf of TIMEFRAMES) analysis[tf.key] = analyzeTimeframe(await loadBars(full, tf, auto.bars), { t3: { ...T3_DEFAULTS, ...(cfg.t3 || {}) } });
+    const rawBars = {};
+    for (const tf of TIMEFRAMES) {
+      rawBars[tf.key] = await loadBars(full, tf, auto.bars);
+      analysis[tf.key] = analyzeTimeframe(rawBars[tf.key], { t3: { ...T3_DEFAULTS, ...(cfg.t3 || {}) } });
+    }
 
     const spec = await symbolSpec(full);
-    const decision = decide(analysis, { bid: spec.bid, ask: spec.ask, min_tick: spec.min_tick, ...opts });
-    const timeframes = Object.fromEntries(TIMEFRAMES.map(tf => [tf.key, summarize(analysis[tf.key])]));
-    logEvent({ event: 'autoorder_decision', symbol: full, dry_run, decision, timeframes });
+    const q = { bid: spec.bid, ask: spec.ask, min_tick: spec.min_tick, ...opts };
+    const ruleDecision = decide(analysis, q);
+    let decision = ruleDecision, jevInfo = null;
 
-    const result = { success: true, symbol: full, dry_run, decision, timeframes, quote: { bid: spec.bid, ask: spec.ask }, order: null };
+    // Jev decides direction + order type; rules keep SL, guards, sizing. Toggle: config jev.enabled or the `jev` param.
+    const jcfg = cfg.jev || {};
+    if (jev ?? jcfg.enabled) {
+      try {
+        const state = buildJevState({ symbol: full, analysis, bars: rawBars, quote: spec, ruleDecision });
+        const j = await jevEntry(state, jcfg);
+        jevInfo = { used: true, ...j };
+        const trends = ruleDecision.trends, bias = ruleDecision.bias;
+        if (!j.dir) {
+          decision = { bias, trends, action: 'wait', side: null, reasons: [j.why], rules: ruleDecision.action };
+        } else {
+          const e = entryForType(analysis, { dir: j.dir, type: j.type, ...q });
+          const fin = finishPlan(analysis, { ...q, dir: j.dir, ...e });
+          const reasons = [j.why, ...(e.note ? [e.note] : [])];
+          decision = fin.ok
+            ? { bias, trends, action: 'trade', ...fin.plan, reasons: [...reasons, fin.nearest == null ? 'No opposing level in range' : `${fin.roomR.toFixed(2)}R of room to ${fin.nearest}`],
+                nearest_level: fin.nearest, room_r: Number.isFinite(fin.roomR) ? Number(fin.roomR.toFixed(2)) : null, rules: ruleDecision.action }
+            : { bias, trends, action: 'wait', side: null, reasons: [...reasons, `Guard: ${fin.why}`], plan: fin.plan, rules: ruleDecision.action };
+        }
+      } catch (err) {
+        jevInfo = { used: false, error: err.message, fallback: jcfg.fallback || 'rules' };
+        if ((jcfg.fallback || 'rules') === 'wait') decision = { ...ruleDecision, action: 'wait', reasons: [...(ruleDecision.reasons || []), `Jev unavailable (${err.message}) — fallback wait`] };
+      }
+    }
+    const timeframes = Object.fromEntries(TIMEFRAMES.map(tf => [tf.key, summarize(analysis[tf.key])]));
+    logEvent({ event: 'autoorder_decision', symbol: full, dry_run, decision, jev: jevInfo, timeframes });
+
+    const result = { success: true, symbol: full, dry_run, decision, jev: jevInfo, timeframes, quote: { bid: spec.bid, ask: spec.ask }, order: null };
     if (decision.action === 'trade') {
       result.order = await placeOrder({
         symbol: full, side: decision.side, type: decision.type,
