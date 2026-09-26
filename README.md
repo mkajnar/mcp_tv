@@ -10,6 +10,7 @@ Orders go to the broker connected in TradingView's Trading Panel (**Paper Tradin
 |---|---|---|
 | `order_place` | `tv order place sell` | Market/limit/stop order. Only `side` is required: qty is sized from `risk_usdt` (incl. fees + slippage), SL = last confirmed swing ± `sl_atr_mult`×ATR, TP = `rr`×R. Everything can be overridden; `dry_run` computes only. |
 | `positions_trail` | `tv order trail [--watch 5]` | Finds **all** open positions and tightens the SL of every one in profit: ATR trail from current price + break-even lock incl. fees, min gap and min step. Never loosens a stop, never touches TP. `--watch N` repeats every N seconds. |
+| `autoorder` | `tv order auto BYBIT:BTCUSDT.P [--dry-run]` | Give it a ticker: it reads 1D/1h/15m/5m/1m (EMA 20/50/200 trend, HH/HL structure, RSI, ADX, ATR extension, compression, volume, levels), decides top-down whether to trade and which order type — **market** on a pullback with a 1m trigger, **limit** on the 15m EMA20 when price is extended, **stop** on a 5m compression breakout or above the trigger bars — sets a structural SL behind the last 5m swing, requires ≥ rr·R room to the next 1h/15m/daily level and a confluence score ≥ `min_score`, then executes via `order_place`. Default is WAIT. Takes a 5m screenshot after the decision. |
 | `order_status` | `tv order status` | Account summary, positions, working orders, active config |
 | `position_set_brackets` | `tv order brackets --sl X --tp Y` | Move SL/TP of an open position |
 | `position_close` | `tv order close` | Close a position at market |
@@ -22,7 +23,8 @@ Orders go to the broker connected in TradingView's Trading Panel (**Paper Tradin
   "risk_usdt": 100, "max_risk_usdt": 500, "rr": 2,
   "sl_atr_mult": 0.5, "atr_length": 14, "pivot_length": 3,
   "fee_rate": 0.0002, "slippage_rate": 0.0002, "allow_live": false,
-  "trailing": { "trail_atr_mult": 1.0, "min_gap_atr": 0.25, "min_step_atr": 0.1, "breakeven": true, "switch_chart": true }
+  "trailing": { "trail_atr_mult": 1.0, "min_gap_atr": 0.25, "min_step_atr": 0.1, "breakeven": true, "switch_chart": true },
+  "auto": { "min_score": 65, "min_bias": 0.35, "bars": 400 }
 }
 ```
 
@@ -34,7 +36,9 @@ Orders go to the broker connected in TradingView's Trading Panel (**Paper Tradin
 
 **Windows Store build of TradingView** — `tv_launch` does not find the Store (Appx) install. Use `scripts/launch-tv-cdp.ps1`: it locates the package via `Get-AppxPackage`, kills running instances (single-instance lock) and starts TradingView with `--remote-debugging-port=9222`.
 
-Money-management unit tests: `node --test tests/trading.test.js`.
+`autoorder` is a rule-based playbook, not a guarantee of profitability — it has not been backtested; validate it with `--dry-run` / Paper Trading first.
+
+Unit tests: `node --test tests/trading.test.js tests/autotrade.test.js`.
 
 ---
 

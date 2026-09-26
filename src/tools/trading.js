@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { jsonResult } from './_format.js';
 import * as core from '../core/trading.js';
+import * as auto from '../core/autotrade.js';
 
 export function registerTradingTools(server) {
   server.tool('order_place',
@@ -23,6 +24,22 @@ export function registerTradingTools(server) {
     dry_run: z.boolean().optional().describe('Compute and validate everything but do not send'),
   }, async (params) => {
     try { return jsonResult(await core.placeOrder(params)); }
+    catch (err) { return jsonResult({ success: false, error: err.message }, true); }
+  });
+
+  server.tool('autoorder',
+    'Give it a ticker and it does the rest: loads the chart, reads 1D/1h/15m/5m/1m (trend, structure, momentum, extension, compression, levels), ' +
+    'decides like a disciplined top-down trader whether to trade at all and which order type (market / limit on pullback / stop on breakout), ' +
+    'places a structural SL and sizes the order by money management via order_place. Default is WAIT unless confluence score >= min_score. ' +
+    'Returns the decision with reasons and a per-timeframe summary.', {
+    symbol: z.string().describe('Ticker, preferably with exchange, e.g. BYBIT:BTCUSDT.P'),
+    dry_run: z.boolean().optional().describe('Analyse and plan, but do not send the order'),
+    risk_usdt: z.coerce.number().optional().describe('Override risk per trade (default trading.json)'),
+    min_score: z.coerce.number().optional().describe('Minimum confluence score 0-100 to trade (default trading.json auto.min_score)'),
+    min_bias: z.coerce.number().optional().describe('Minimum weighted top-down bias 0-1 (default trading.json auto.min_bias)'),
+    screenshot: z.boolean().optional().describe('Capture a 5m screenshot after the decision (default true); path returned in screenshot'),
+  }, async (params) => {
+    try { return jsonResult(await auto.autoOrder(params)); }
     catch (err) { return jsonResult({ success: false, error: err.message }, true); }
   });
 

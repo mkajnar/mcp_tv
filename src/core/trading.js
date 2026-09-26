@@ -246,7 +246,7 @@ async function snapshot(symbol) {
 
 // ── Audit log ───────────────────────────────────────────────────────────
 
-function logEvent(event) {
+export function logEvent(event) {
   const line = { ts: new Date().toISOString(), ...event };
   try {
     mkdirSync(ORDERS_DIR, { recursive: true });
@@ -274,6 +274,16 @@ async function waitFor(check, { tries = 12, delayMs = 400 } = {}) {
 }
 
 // ── Public API ──────────────────────────────────────────────────────────
+
+/** Tick size, quantity step and live bid/ask of a symbol from the connected broker. */
+export async function symbolSpec(symbol) {
+  return brokerEval(`
+    var sym = ${JSON.stringify(symbol)};
+    var si = await b.symbolInfo(sym);
+    var q = await b.quotesSnapshot(sym);
+    return { symbol: sym, min_tick: si.minTick, qty_step: si.qty && si.qty.step, bid: q.bid, ask: q.ask, tradable: q.is_tradable };
+  `);
+}
 
 export async function status({ symbol } = {}) {
   const res = await brokerEval(`

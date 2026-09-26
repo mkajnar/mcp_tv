@@ -1,5 +1,6 @@
 import { register } from '../router.js';
 import * as core from '../../core/trading.js';
+import * as auto from '../../core/autotrade.js';
 
 const num = (v) => (v === undefined ? undefined : Number(v));
 
@@ -28,6 +29,21 @@ register('order', {
           risk_usdt: num(opts.risk), sl: num(opts.sl), tp: num(opts.tp), rr: num(opts.rr),
           sl_atr_mult: num(opts['sl-atr-mult']), allow_add: !!opts['allow-add'], dry_run: !!opts['dry-run'],
         });
+      },
+    }],
+    ['auto', {
+      description: 'Analyse 1D/1h/15m/5m/1m and trade only if the playbook qualifies. Usage: tv order auto BYBIT:BTCUSDT.P [--dry-run]',
+      options: {
+        risk: { type: 'string', short: 'r', description: 'Risk per trade (default trading.json)' },
+        'min-score': { type: 'string', description: 'Minimum confluence score 0-100' },
+        'min-bias': { type: 'string', description: 'Minimum weighted top-down bias 0-1' },
+        'dry-run': { type: 'boolean', short: 'n', description: 'Analyse and plan only' },
+        'no-screenshot': { type: 'boolean', description: 'Skip the 5m screenshot' },
+      },
+      handler: (opts, positionals) => {
+        if (!positionals[0]) throw new Error('Symbol required. Usage: tv order auto BYBIT:BTCUSDT.P');
+        return auto.autoOrder({ symbol: positionals[0], risk_usdt: num(opts.risk), min_score: num(opts['min-score']),
+          min_bias: num(opts['min-bias']), dry_run: !!opts['dry-run'], screenshot: !opts['no-screenshot'] });
       },
     }],
     ['status', {

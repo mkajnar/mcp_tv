@@ -14,5 +14,10 @@
     "min_step_atr": 0.1,
     "breakeven": true,
     "switch_chart": true
+  },
+  "auto": {
+    "min_score": 65,
+    "min_bias": 0.35,
+    "bars": 400
   }
 }
