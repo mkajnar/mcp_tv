@@ -84,7 +84,7 @@ Use `study_filter` parameter to target a specific indicator by name substring (e
 Each call does the whole flow itself (account check → money management → guards → send → verify → audit log). Do NOT script orders through `ui_evaluate`.
 - `order_place` with just `side` → market order on the active chart symbol, qty sized from `risk_usdt`, SL = last confirmed swing ± `sl_atr_mult`×ATR, TP = `rr`×R. Override with `symbol`, `type` (market/limit/stop) + `price`, `qty`, `sl`, `tp`, `rr`, `dry_run`.
 - `positions_trail` → finds ALL open positions and tightens the SL of every one in profit (ATR trail from current price, break-even lock incl. fees, min gap/step). Never loosens a stop, never touches TP.
-- `autoorder` with `symbol` → full multi-timeframe read (1D/1h/15m/5m/1m) + decision (wait / market / limit / stop) + money-managed execution + 5m screenshot. Takes ~20 s (switches timeframes). Default is WAIT.
+- `autoorder` with `symbol` → full multi-timeframe read (1D/1h/15m/5m/1m) + decision (wait / market / limit / stop) + money-managed execution + 5m screenshot. Takes ~20 s (switches timeframes). Default is WAIT. T3 FAST/SLOW (config `t3`) gates entries (15m T3 alignment, no fresh 5m counter-cross) and a fresh 5m/1m T3 cross is a trigger; `positions_trail` closes a position on a 5m T3 cross against it (`trailing.t3_exit`).
 - `order_status` → account summary, positions, working orders, active config
 - `position_set_brackets` → move SL/TP, `position_close` → flatten, `order_cancel` → cancel working orders
 - Money-management defaults live in `trading.json` (repo root, overridden by `~/.tradingview-mcp/trading.json`).

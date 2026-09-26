@@ -68,7 +68,8 @@ export function registerTradingTools(server) {
 
   server.tool('positions_trail',
     'Find ALL open positions and immediately tighten the stop loss of every position that is in profit (ATR trail from current price + break-even lock incl. fees). ' +
-    'Never loosens a stop, never touches TP. Positions on other symbols are read by briefly switching the chart (restored afterwards).', {
+    'Never loosens a stop, never touches TP. With trailing.t3_exit it also closes a position when T3 FAST crosses T3 SLOW against it on the last closed bar. ' +
+    'Bybit perpetuals use Bybit klines/quotes; other symbols are read by briefly switching the chart (restored afterwards).', {
     symbol: z.string().optional().describe('Only this symbol (default: all open positions)'),
     trail_atr_mult: z.coerce.number().optional().describe('SL distance from price in ATRs (default trading.json trailing.trail_atr_mult)'),
     min_gap_atr: z.coerce.number().optional().describe('Minimum SL distance from price in ATRs'),

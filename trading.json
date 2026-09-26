@@ -8,6 +8,11 @@
   "fee_rate": 0.0002,
   "slippage_rate": 0.0002,
   "allow_live": false,
+  "t3": {
+    "fast": 8,
+    "slow": 21,
+    "factor": 0.7
+  },
   "leverage": {
     "enabled": true,
     "min": 10,
@@ -18,6 +23,7 @@
   },
   "trailing": {
     "activate_r": 1,
+    "t3_exit": true,
     "trail_atr_mult": 1.0,
     "min_gap_atr": 0.25,
     "min_step_atr": 0.1,

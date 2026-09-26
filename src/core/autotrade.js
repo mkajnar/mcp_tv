@@ -11,12 +11,17 @@
  *  - 5m compression pressing the range edge → stop entry on the breakout
  *  - pullback into value with a 1m momentum trigger → market, without trigger → stop above the trigger bar
  *  - structural stop behind the last 5m swing, must leave ≥ rr·R room to the next 1h/15m/daily level
+ *  - T3 FAST/SLOW: 15m T3 must agree with the direction, no fresh 5m T3 cross against it;
+ *    a fresh T3 cross in the trade direction on 5m/1m counts as a trigger
  *  - confluence score (0–100) must reach min_score
  */
 import { evaluate } from '../connection.js';
 import { getOhlcv } from './data.js';
 import { setSymbol, setTimeframe } from './chart.js';
 import { captureScreenshot } from './capture.js';
+import { ema, t3State } from './ta.js';
+
+export { ema };
 import { computeAtr, loadConfig, placeOrder, status, symbolSpec, roundToStep, logEvent } from './trading.js';
 
 const CHART_API = 'window.TradingViewApi._activeChartWidgetWV.value()';
@@ -30,20 +35,9 @@ export const TIMEFRAMES = [
 ];
 
 export const AUTO_DEFAULTS = { min_score: 65, min_bias: 0.35, bars: 400 };
+export const T3_DEFAULTS = { fast: 8, slow: 21, factor: 0.7 };
 
 // ── Indicators (closed bars) ────────────────────────────────────────────
-
-export function ema(values, len) {
-  const k = 2 / (len + 1);
-  const out = [];
-  let e = null;
-  for (let i = 0; i < values.length; i++) {
-    if (i < len - 1) { out.push(null); continue; }
-    e = e === null ? values.slice(0, len).reduce((a, b) => a + b, 0) / len : values[i] * k + e * (1 - k);
-    out.push(e);
-  }
-  return out;
-}
 
 export function rsi(closes, len = 14) {
   if (closes.length < len + 1) return closes.map(() => null);
@@ -104,7 +98,7 @@ export function swings(bars, L = 3, R = 3) {
 const r4 = (x) => (x == null || !Number.isFinite(x) ? null : Number(x.toFixed(4)));
 
 /** rawBars includes the forming bar as the last element; it is ignored. */
-export function analyzeTimeframe(rawBars, { pivot = 3 } = {}) {
+export function analyzeTimeframe(rawBars, { pivot = 3, t3 = T3_DEFAULTS } = {}) {
   const bars = rawBars.slice(0, -1);
   if (bars.length < 60) throw new Error(`Not enough closed bars for analysis: ${bars.length}`);
   const closes = bars.map(b => b.close);
@@ -148,6 +142,7 @@ export function analyzeTimeframe(rawBars, { pivot = 3 } = {}) {
     swing_highs: highs.slice(-6).map(p => p.price),
     swing_lows: lows.slice(-6).map(p => p.price),
     rel_vol: avgVol > 0 ? (last.volume || 0) / avgVol : null,
+    t3: t3State(closes, { ...t3, recent: 3 }),
     last_bar: { open: last.open, high: last.high, low: last.low, close: last.close },
     prev_bar: { open: prev.open, high: prev.high, low: prev.low, close: prev.close },
     bars: bars.length,
@@ -175,12 +170,15 @@ export function decide(a, { bid, ask, min_tick, rr = 2, min_score = AUTO_DEFAULT
   reasons.push(`Top-down ${side} bias ${base.bias} (1D ${a['1d'].trend}, 1h ${a['1h'].trend}, 15m ${a['15m'].trend}, 5m ${a['5m'].trend})`);
 
   const m15 = a['15m'], m5 = a['5m'], m1 = a['1m'];
+  if (m15.t3 && m15.t3.bull !== (dir === 1)) return wait(`15m T3 FAST is ${m15.t3.bull ? 'above' : 'below'} T3 SLOW — against the ${side}`);
+  if (m5.t3 && m5.t3.cross === -dir) return wait(`Fresh 5m T3 cross against the ${side} (${m5.t3.cross_bars_ago} bars ago)`);
+  const t3Trigger = (m5.t3 && m5.t3.cross === dir) || (m1.t3 && m1.t3.cross === dir);
   const trending = (a['1h'].adx ?? 0) >= 20 || (m15.adx ?? 0) >= 22;
   const ext15 = m15.extension * dir;
   const exhausted = dir === 1 ? (m15.rsi > 70 || m5.rsi > 75) : (m15.rsi < 30 || m5.rsi < 25);
-  const mom1 = dir === 1
+  const mom1 = t3Trigger || (dir === 1
     ? (m1.last_bar.close > m1.prev_bar.high || (m1.rsi > m1.rsi_prev && m1.rsi > 45))
-    : (m1.last_bar.close < m1.prev_bar.low || (m1.rsi < m1.rsi_prev && m1.rsi < 55));
+    : (m1.last_bar.close < m1.prev_bar.low || (m1.rsi < m1.rsi_prev && m1.rsi < 55)));
   const rangeSize = m5.range.high - m5.range.low;
   const nearEdge = rangeSize > 0 && (dir === 1 ? (m5.close - m5.range.low) / rangeSize >= 0.7 : (m5.range.high - m5.close) / rangeSize >= 0.7);
   const market = dir === 1 ? ask : bid;
@@ -196,7 +194,7 @@ export function decide(a, { bid, ask, min_tick, rr = 2, min_score = AUTO_DEFAULT
   } else if (Math.abs(m15.extension) <= 0.75 || Math.abs(m5.extension) <= 0.5) {
     if (mom1) {
       type = 'market'; entry = market;
-      why = 'Pullback into value (15m/5m EMA) with a 1m momentum trigger — market entry';
+      why = `Pullback into value (15m/5m EMA) with a ${t3Trigger ? 'fresh T3 cross' : '1m momentum'} trigger — market entry`;
     } else {
       type = 'stop';
       entry = dir === 1 ? Math.max(m1.last_bar.high, m1.prev_bar.high) + 0.1 * m1.atr : Math.min(m1.last_bar.low, m1.prev_bar.low) - 0.1 * m1.atr;
@@ -234,9 +232,11 @@ export function decide(a, { bid, ask, min_tick, rr = 2, min_score = AUTO_DEFAULT
   if (roomR < rr) return wait(`Only ${roomR.toFixed(2)}R of room to the next ${dir === 1 ? 'resistance' : 'support'} ${nearest} — need ${rr}R`, { plan });
   reasons.push(nearest == null ? 'No opposing level in range (open space)' : `${roomR.toFixed(2)}R of room to the next level ${nearest}`);
 
+  const t3Pts = (m15.t3 && m15.t3.bull === (dir === 1) ? 4 : 0) + (m5.t3 && m5.t3.bull === (dir === 1) ? 3 : 0) + (t3Trigger ? 3 : 0);
   const sc = {
-    bias: Math.round(35 * Math.min(1, Math.abs(bias))),
-    regime: trending ? 15 : 5,
+    bias: Math.round(30 * Math.min(1, Math.abs(bias))),
+    regime: trending ? 10 : 3,
+    t3: t3Pts,
     location: roomR >= rr + 1 ? 20 : 12,
     trigger: type === 'market' ? 15 : type === 'stop' ? ((m5.rel_vol ?? 0) >= 1.2 ? 15 : 10) : 10,
     momentum: (dir === 1 ? m15.rsi >= 40 && m15.rsi <= 68 : m15.rsi >= 32 && m15.rsi <= 60) ? 10 : 3,
@@ -277,7 +277,7 @@ async function loadBars(symbol, tf, count) {
 
 function summarize(t) {
   return {
-    trend: t.trend, structure: t.structure, close: r4(t.close), ema20: r4(t.ema20), ema50: r4(t.ema50), ema200: r4(t.ema200),
+    trend: t.trend, structure: t.structure, t3: t.t3 ? `${t.t3.bull ? 'bull' : 'bear'}${t.t3.cross ? (t.t3.cross > 0 ? ', cross up ' : ', cross down ') + t.t3.cross_bars_ago + ' bars ago' : ''}` : null, close: r4(t.close), ema20: r4(t.ema20), ema50: r4(t.ema50), ema200: r4(t.ema200),
     rsi: r4(t.rsi), adx: r4(t.adx), atr: r4(t.atr), ext_atr: r4(t.extension), compressed: t.compressed, rel_vol: r4(t.rel_vol),
   };
 }
@@ -313,7 +313,7 @@ export async function autoOrder({ symbol, dry_run = false, risk_usdt, min_score,
 
   const analysis = {};
   try {
-    for (const tf of TIMEFRAMES) analysis[tf.key] = analyzeTimeframe(await loadBars(full, tf, auto.bars));
+    for (const tf of TIMEFRAMES) analysis[tf.key] = analyzeTimeframe(await loadBars(full, tf, auto.bars), { t3: { ...T3_DEFAULTS, ...(cfg.t3 || {}) } });
 
     const spec = await symbolSpec(full);
     const decision = decide(analysis, { bid: spec.bid, ask: spec.ask, min_tick: spec.min_tick, ...opts });

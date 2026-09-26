@@ -6,6 +6,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { ema, rsi, adx, swings, analyzeTimeframe, decide } from '../src/core/autotrade.js';
+import { t3, t3State } from '../src/core/ta.js';
 
 describe('indicators', () => {
   it('ema seeds with SMA and follows the series', () => {
@@ -32,6 +33,30 @@ describe('indicators', () => {
     const bars = [1, 2, 3, 9, 3, 2, 1, 5].map((h, i) => ({ high: h, low: h - 1, time: i }));
     const { highs } = swings(bars, 3, 3);
     assert.deepEqual(highs.map(h => h.price), [9]);
+  });
+});
+
+describe('T3', () => {
+  it('t3 tracks a constant series exactly (coefficients sum to 1)', () => {
+    const v = t3(Array(200).fill(50), 8);
+    assert.ok(Math.abs(v.at(-1) - 50) < 1e-9);
+    assert.equal(v[10], null);
+  });
+
+  it('fast above slow in an uptrend, cross detected after a reversal', () => {
+    const upSeries = Array.from({ length: 200 }, (_, i) => 100 + i * 0.5);
+    const st = t3State(upSeries);
+    assert.equal(st.bull, true);
+    assert.equal(st.cross, 0);
+    let rev = null;
+    const s = [...upSeries];
+    for (let k = 0; k < 60 && !(rev && rev.cross === -1); k++) { s.push(s.at(-1) - 2); rev = t3State(s, { recent: 1 }); }
+    assert.equal(rev.cross, -1);
+    assert.equal(rev.bull, false);
+  });
+
+  it('returns null without enough bars', () => {
+    assert.equal(t3State([1, 2, 3]), null);
   });
 });
 
@@ -63,6 +88,7 @@ function tf(over = {}) {
     range: { high: 102, low: 97, size_atr: 5 }, compressed: false,
     swing_highs: [103, 110], swing_lows: [96, 98.5], rel_vol: 1.1,
     last_bar: { open: 99.8, high: 100.3, low: 99.7, close: 100.2 }, prev_bar: { open: 99.5, high: 100.1, low: 99.4, close: 99.8 },
+    t3: { bull: (over.trend ?? 0.8) >= 0, cross: 0, cross_bars_ago: null },
     ...over,
   };
 }
@@ -114,6 +140,27 @@ describe('decide', () => {
     const d = decide(a, Q);
     assert.equal(d.type, 'stop');
     assert.equal(d.entry, 100.7);
+  });
+
+  it('waits when the 15m T3 is against the trade', () => {
+    const a = up(); a['15m'].t3 = { bull: false, cross: 0 };
+    const d = decide(a, Q);
+    assert.equal(d.action, 'wait');
+    assert.match(d.reasons.at(-1), /15m T3/);
+  });
+
+  it('waits on a fresh 5m T3 cross against the trade', () => {
+    const a = up(); a['5m'].t3 = { bull: false, cross: -1, cross_bars_ago: 0 };
+    assert.match(decide(a, Q).reasons.at(-1), /5m T3 cross against/);
+  });
+
+  it('a fresh 5m T3 cross in the direction replaces the 1m momentum trigger', () => {
+    const a = up(); a['1m'] = tf({ rsi: 40, rsi_prev: 44, last_bar: { high: 100.4, low: 99.8, close: 99.9 }, prev_bar: { high: 100.6, low: 99.9, close: 100.1 } });
+    a['5m'].t3 = { bull: true, cross: 1, cross_bars_ago: 0 };
+    const d = decide(a, Q);
+    assert.equal(d.type, 'market');
+    assert.match(d.reasons.join(' | '), /T3 cross/);
+    assert.equal(d.score_breakdown.t3, 10);
   });
 
   it('waits when resistance is closer than rr·R', () => {

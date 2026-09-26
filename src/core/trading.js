@@ -8,6 +8,7 @@
 import { evaluateAsync } from '../connection.js';
 import { getOhlcv } from './data.js';
 import { setSymbol } from './chart.js';
+import { t3State } from './ta.js';
 import { existsSync, readFileSync, mkdirSync, appendFileSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
 import { homedir } from 'node:os';
@@ -32,6 +33,7 @@ export const DEFAULT_CONFIG = {
   fee_rate: 0.0002,      // per side, applied to entry + exit price
   slippage_rate: 0.0002, // modelled the same way as fees
   allow_live: false,     // live (non-demo) accounts refused unless true or TV_ALLOW_LIVE_TRADING=1
+  t3: { fast: 8, slow: 21, factor: 0.7 }, // Tillson T3 FAST / SLOW used by autoorder and the T3 exit
   leverage: {
     enabled: true,
     min: 10,               // leverage range chosen from the last hour's volatility
@@ -42,6 +44,7 @@ export const DEFAULT_CONFIG = {
   },
   trailing: {
     activate_r: 1,         // leave the original stop alone until the trade is +activate_r·R, then at least break-even
+    t3_exit: true,         // close the position when T3 FAST crosses T3 SLOW against it on the last closed bar (atr_timeframe)
     trail_atr_mult: 1.0,   // ATR trail: SL = price ± trail_atr_mult * ATR
     min_gap_atr: 0.25,     // SL never closer to price than min_gap_atr * ATR
     min_step_atr: 0.1,     // move only if the stop improves by at least this many ATRs (avoids micro-updates)
@@ -60,7 +63,7 @@ export function loadConfig() {
     if (!existsSync(p)) continue;
     try {
       const file = JSON.parse(readFileSync(p, 'utf8'));
-      Object.assign(cfg, file, { trailing: { ...cfg.trailing, ...(file.trailing || {}) }, leverage: { ...cfg.leverage, ...(file.leverage || {}) } });
+      Object.assign(cfg, file, { trailing: { ...cfg.trailing, ...(file.trailing || {}) }, leverage: { ...cfg.leverage, ...(file.leverage || {}) }, t3: { ...cfg.t3, ...(file.t3 || {}) } });
     }
     catch (err) { throw new Error(`Invalid JSON in ${p}: ${err.message}`); }
   }
@@ -199,6 +202,7 @@ async function bybitBars(symbol, interval = '1', limit = 200) {
   const m = /^BYBIT:([A-Z0-9]+)\.P$/i.exec(symbol);
   if (!m) return null;
   const res = await fetch(`https://api.bybit.com/v5/market/kline?category=linear&symbol=${m[1].toUpperCase()}&interval=${interval}&limit=${limit}`);
+  // limit up to 1000; T3 SLOW needs ~6×length bars to settle
   const json = await res.json();
   if (json.retCode !== 0) throw new Error(`Bybit kline ${m[1]}: ${json.retMsg}`);
   return json.result.list.map(r => ({ time: Number(r[0]) / 1000, open: +r[1], high: +r[2], low: +r[3], close: +r[4], volume: +r[5] })).reverse();
@@ -558,6 +562,7 @@ export async function trailStops({ symbol, dry_run = false, trail_atr_mult, min_
   const cfg = loadConfig();
   const tr = {
     activate_r: cfg.trailing.activate_r,
+    t3_exit: cfg.trailing.t3_exit,
     trail_atr_mult: trail_atr_mult ?? cfg.trailing.trail_atr_mult,
     min_gap_atr: min_gap_atr ?? cfg.trailing.min_gap_atr,
     min_step_atr: min_step_atr ?? cfg.trailing.min_step_atr,
@@ -592,8 +597,9 @@ export async function trailStops({ symbol, dry_run = false, trail_atr_mult, min_
       const fallback = [side === -1 ? pos.ask : pos.bid, pos.last_price].filter(x => x > 0);
       const price = live ? (side === -1 ? live.ask : live.bid) : (side === -1 ? Math.max(...fallback) : Math.min(...fallback));
       const base = { symbol: pos.symbol, side: pos.side, qty: pos.qty, entry: pos.avg_price, price, quote_source: live ? 'bybit' : 'tradingview', current_sl: pos.stop_loss ?? null };
-      if (!(side === -1 ? price < pos.avg_price : price > pos.avg_price)) { results.push({ ...base, action: 'skip', reason: 'position is not in profit' }); continue; }
-      let bars = tr.bars_source === 'bybit' ? await bybitBars(pos.symbol, tr.atr_timeframe) : null;
+      const inProfit = side === -1 ? price < pos.avg_price : price > pos.avg_price;
+      if (!inProfit && !tr.t3_exit) { results.push({ ...base, action: 'skip', reason: 'position is not in profit' }); continue; }
+      let bars = tr.bars_source === 'bybit' ? await bybitBars(pos.symbol, tr.atr_timeframe, 400) : null;
       if (!bars) {
         if (pos.symbol !== ctx.chart_symbol) {
           if (!tr.switch_chart) { results.push({ ...base, action: 'skip', reason: `not on the active chart (${ctx.chart_symbol}) and switch_chart is off` }); continue; }
@@ -602,6 +608,21 @@ export async function trailStops({ symbol, dry_run = false, trail_atr_mult, min_
         }
         ({ bars } = await getOhlcv({ count: 300 }));
       }
+      // T3 exit: fast crossed slow against the position on the last closed bar
+      if (tr.t3_exit) {
+        const st = t3State(bars.slice(0, -1).map(b => b.close), { ...cfg.t3, recent: 1 });
+        if (st && st.cross === -side) {
+          const row = { ...base, action: 't3_exit', reason: `T3 FAST crossed ${side === 1 ? 'below' : 'above'} T3 SLOW on the last closed ${tr.atr_timeframe}m bar`,
+            t3_fast: st.fast, t3_slow: st.slow };
+          if (!dry_run) {
+            try { const res = await closePosition({ symbol: pos.symbol }); row.applied = res.verified; if (!res.verified) row.warning = 'Close sent but not confirmed — check order_status'; }
+            catch (err) { row.applied = false; row.error = err.message; }
+          }
+          results.push(row);
+          continue;
+        }
+      }
+      if (!inProfit) { results.push({ ...base, action: 'skip', reason: 'position is not in profit' }); continue; }
       const atr = computeAtr(bars, cfg.atr_length);
       const plan = computeTrailStop({ side, entry: pos.avg_price, price, current_sl: pos.stop_loss ?? null, atr, min_tick: pos.min_tick,
         trail_atr_mult: tr.trail_atr_mult, min_gap_atr: tr.min_gap_atr, min_step_atr: tr.min_step_atr, fee_rate: cfg.fee_rate, breakeven: tr.breakeven,
