@@ -5,7 +5,7 @@
  */
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseResponse, evaluate, entryQuestions, exitQuestions, scrub, ENTRY_ACTIONS, probAtLeast } from '../src/core/jev.js';
+import { parseResponse, evaluate, entryQuestions, exitQuestions, scrub, ENTRY_ACTIONS, probAtLeast, decideEntry, decideExit } from '../src/core/jev.js';
 import { entryForType, finishPlan } from '../src/core/autotrade.js';
 
 describe('parseResponse', () => {
@@ -65,10 +65,40 @@ describe('score scale (Jev levels are 0-indexed, verified live)', () => {
   });
 });
 
+describe('decideEntry (probability + margin over wait)', () => {
+  const Q = (probs, qp) => ({ action: { value: 'wait', confidence: 0.3, probabilities: probs },
+    setup_quality: { value: 2, label: 'Average', probabilities: qp ?? { 0: 0, 1: 0.2, 2: 0.5, 3: 0.3, 4: 0 } } });
+  it('WLD case: long_limit 0.46 vs wait 0.33 -> trade long limit', () => {
+    const d = decideEntry(Q({ long_limit: 0.46, wait: 0.33, long_stop: 0.12 }));
+    assert.equal(d.action, 'long_limit');
+    assert.equal(d.dir, 1);
+    assert.equal(d.type, 'limit');
+  });
+  it('TAO case: long_limit 0.39 < 0.4 -> wait', () => {
+    assert.equal(decideEntry(Q({ long_limit: 0.39, wait: 0.34 })).action, 'wait');
+  });
+  it('lead over wait below the margin -> wait', () => {
+    assert.match(decideEntry(Q({ long_limit: 0.45, wait: 0.40 })).why, /leads wait/);
+  });
+  it('low quality probability -> wait', () => {
+    assert.match(decideEntry(Q({ short_stop: 0.6, wait: 0.2 }, { 0: 0.4, 1: 0.3, 2: 0.2, 3: 0.1 })).why, /quality/);
+  });
+});
+
+describe('decideExit', () => {
+  it('close needs p >= 0.5 and a lead over hold', () => {
+    assert.equal(decideExit({ probabilities: { close: 0.55, hold: 0.3, tighten: 0.15 } }).action, 'close');
+    assert.equal(decideExit({ probabilities: { close: 0.5, hold: 0.45, tighten: 0.05 } }).action, 'hold');
+  });
+  it('tighten at p >= 0.4 above hold (live samples)', () => {
+    assert.equal(decideExit({ probabilities: { tighten: 0.58, hold: 0.41, close: 0.01 } }).action, 'tighten');
+    assert.equal(decideExit({ probabilities: { tighten: 0.35, hold: 0.6, close: 0.05 } }).action, 'hold');
+  });
+});
+
 describe('catalog', () => {
   it('entry action covers long/short × market/limit/stop + wait', () => {
     assert.deepEqual(Object.keys(ENTRY_ACTIONS).sort(), ['long_limit', 'long_market', 'long_stop', 'short_limit', 'short_market', 'short_stop', 'wait']);
-    assert.equal(entryQuestions({ entry_threshold: 0.65 }).action.threshold, 0.65);
     assert.deepEqual(Object.keys(exitQuestions().exit_action.criteria), ['hold', 'tighten', 'close']);
   });
   it('scrub hides the key and bearer tokens', () => {

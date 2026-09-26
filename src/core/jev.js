@@ -192,32 +192,53 @@ export function probAtLeast(q, minIndex) {
 }
 
 /** Entry decision → { action, dir, type, binding, confidence, quality, ... } */
-export async function jevEntry(state, cfgJev = {}) {
-  const questions = entryQuestions(cfgJev);
-  const res = await callJev({ state, questions, tag: `entry ${state.symbol || ''}`.trim() });
-  const ev = evaluate(res.answers, questions);
+/**
+ * Entry gate on the probability distribution (not Jev's confidence, which stays low when the
+ * distribution is spread): the best trade action must have p >= entry_min_prob and lead wait by
+ * >= entry_margin; setup quality needs P(level >= min_quality) >= quality_min_p.
+ */
+export function decideEntry(ev, cfgJev = {}) {
   const act = ev.action, q = ev.setup_quality;
-  const minQ = cfgJev.min_quality ?? 3;
+  const minProb = cfgJev.entry_min_prob ?? 0.4, margin = cfgJev.entry_margin ?? 0.1;
+  const minQ = cfgJev.min_quality ?? 3, qMinP = cfgJev.quality_min_p ?? 0.4;
+  const probs = act?.probabilities || (act?.value ? { [act.value]: act.confidence ?? 0 } : {});
+  const pWait = Number(probs.wait ?? 0);
+  const [best, pBest] = Object.entries(probs).filter(([k]) => k !== 'wait' && k in ENTRY_ACTIONS)
+    .map(([k, v]) => [k, Number(v)]).sort((x, y) => y[1] - x[1])[0] || [null, 0];
   const qualityLevel = q ? q.value + 1 : null;  // 1..5 (Jev levels are 0-indexed)
   const qualityP = q ? probAtLeast(q, minQ - 1) : null;
   let decision = 'wait', why;
-  if (!act?.binding) why = `Jev action "${act?.value}" not binding (confidence ${act?.confidence?.toFixed?.(2)} < ${questions.action.threshold})`;
-  else if (act.value === 'wait') why = 'Jev: wait';
-  else if (qualityP != null && qualityP < 0.5) why = `Jev setup quality ${qualityLevel}/5 (${q.label}): P(quality ≥ ${minQ}/5) = ${qualityP.toFixed(2)} < 0.5`;
-  else { decision = act.value; why = `Jev: ${act.value} (confidence ${act.confidence.toFixed(2)}, quality ${qualityLevel}/5, P(≥${minQ}) ${qualityP?.toFixed(2)})`; }
+  if (!best || pBest < minProb) why = `Jev best trade ${best} p=${pBest.toFixed(2)} < ${minProb} (wait ${pWait.toFixed(2)})`;
+  else if (pBest - pWait < margin - 1e-9) why = `Jev ${best} ${pBest.toFixed(2)} leads wait ${pWait.toFixed(2)} by < ${margin}`;
+  else if (qualityP != null && qualityP < qMinP) why = `Jev setup quality ${qualityLevel}/5: P(>=${minQ}) ${qualityP.toFixed(2)} < ${qMinP}`;
+  else { decision = best; why = `Jev: ${best} p=${pBest.toFixed(2)} vs wait ${pWait.toFixed(2)}, quality ${qualityLevel}/5 (P>=${minQ} ${qualityP?.toFixed(2)})`; }
   const [side, type] = decision === 'wait' ? [null, null] : decision.split('_');
   return { action: decision, side, type, dir: side === 'long' ? 1 : side === 'short' ? -1 : 0, why,
-    raw_action: act?.value, confidence: act?.confidence ?? null, probabilities: act?.probabilities ?? null,
-    quality: qualityLevel, quality_label: q?.label ?? null, quality_raw: q?.raw ?? null, quality_p_min: qualityP, elapsedMs: res.elapsedMs, credits: res.credits };
+    raw_action: act?.value ?? null, best_trade: best, p_best: pBest, p_wait: pWait, confidence: act?.confidence ?? null, probabilities: act?.probabilities ?? null,
+    quality: qualityLevel, quality_label: q?.label ?? null, quality_raw: q?.raw ?? null, quality_p_min: qualityP };
 }
 
-/** Exit decision → { action: hold | tighten | close, binding, confidence } */
+/** close: p(close) >= exit_close_prob and leads hold by exit_margin; tighten: p(tighten) >= exit_tighten_prob and > hold. */
+export function decideExit(ev, cfgJev = {}) {
+  const probs = ev?.probabilities || (ev?.value ? { [ev.value]: ev.confidence ?? 0 } : {});
+  const p = (k) => Number(probs[k] ?? 0);
+  const closeP = cfgJev.exit_close_prob ?? 0.5, margin = cfgJev.exit_margin ?? 0.1, tightenP = cfgJev.exit_tighten_prob ?? 0.4;
+  let action = 'hold';
+  if (p('close') >= closeP && p('close') - p('hold') >= margin - 1e-9) action = 'close';
+  else if (p('tighten') >= tightenP && p('tighten') > p('hold')) action = 'tighten';
+  return { action, raw_action: ev?.value ?? null, confidence: ev?.confidence ?? null, probabilities: ev?.probabilities ?? null };
+}
+
+/** Entry decision -> { action, dir, type, p_best, p_wait, quality, ... } */
+export async function jevEntry(state, cfgJev = {}) {
+  const questions = entryQuestions(cfgJev);
+  const res = await callJev({ state, questions, tag: `entry ${state.symbol || ''}`.trim() });
+  return { ...decideEntry(evaluate(res.answers, questions), cfgJev), elapsedMs: res.elapsedMs, credits: res.credits };
+}
+
+/** Exit decision -> { action: hold | tighten | close, probabilities } */
 export async function jevExit(state, cfgJev = {}) {
   const questions = exitQuestions(cfgJev);
   const res = await callJev({ state, questions, tag: `exit ${state.position?.symbol || ''}`.trim() });
-  const ev = evaluate(res.answers, questions).exit_action;
-  let action = ev?.value || 'hold';
-  if (action === 'close' && !ev.binding) action = 'hold';
-  if (action === 'tighten' && !(ev.confidence >= 0.5)) action = 'hold';
-  return { action, raw_action: ev?.value, confidence: ev?.confidence ?? null, probabilities: ev?.probabilities ?? null, elapsedMs: res.elapsedMs, credits: res.credits };
+  return { ...decideExit(evaluate(res.answers, questions).exit_action, cfgJev), elapsedMs: res.elapsedMs, credits: res.credits };
 }

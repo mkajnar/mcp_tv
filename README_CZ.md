@@ -166,11 +166,12 @@ Indikátor „MKA Multi“ (RSI, MACD, swingy, T3 FAST/SLOW) kreslí signály T3
 - **Vstupy (autoorder):**
   - Jev dostane state: indikátory pro každý timeframe, T3, swingy, posledních 20 svíček OHLCV z 1D/1h/15m/5m/1m, aktuální cenu a názor pravidel.
   - Položí se mu dvě otázky: `action` (choice: long/short × market/limit/stop, nebo wait) a `setup_quality` (score 1–5).
-  - Obchod se zadá, jen když má `action` jistotu ≥ `jev.entry_threshold` (0.6) a kvalita je ≥ `jev.min_quality` (3).
+  - Rozhoduje rozdělení pravděpodobností od JEV. Nejlepší obchodní akce musí mít p ≥ `jev.entry_min_prob` (0.4) a vést před `wait` aspoň o `jev.entry_margin` (0.1). Pravděpodobnost kvality aspoň `jev.min_quality` (3/5) musí být ≥ `jev.quality_min_p` (0.4).
+  - Pole `confidence` od JEV se jako podmínka nepoužívá, protože při rozprostřeném rozdělení vychází vždy nízko.
   - Vstupní cenu pro zvolený typ, strukturální SL, pojistky proti příliš širokému nebo těsnému stopu a podmínku ≥ rr·R místa řeší pravidla. Zadání pak jde přes `order_place` s money managementem.
 - **Výstupy (trail smyčka):**
   - Při zapnutém `jev.exits` se JEV u každé pozice zeptá na `exit_action` (hold / tighten / close), a to nejvýš jednou za `jev.exit_interval_s` (60 s).
-  - `close` vyžaduje jistotu ≥ `jev.exit_threshold` (0.75).
+  - `close` vyžaduje p(close) ≥ `jev.exit_close_prob` (0.5) a náskok aspoň `jev.exit_margin` (0.1) před hold. `tighten` vyžaduje p ≥ `jev.exit_tighten_prob` (0.4) a víc než hold.
   - `tighten` posune SL aspoň na break-even a nikdy ho nepovolí.
   - ATR trail a T3 exit běží dál jako záchranná síť.
 - **Výpadky JEV:**

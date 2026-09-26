@@ -19,11 +19,15 @@
     "enabled": false,
     "exits": true,
     "rules_hint": false,
-    "entry_threshold": 0.6,
     "min_quality": 3,
-    "exit_threshold": 0.75,
     "exit_interval_s": 60,
-    "fallback": "rules"
+    "fallback": "rules",
+    "entry_min_prob": 0.4,
+    "entry_margin": 0.1,
+    "quality_min_p": 0.4,
+    "exit_close_prob": 0.5,
+    "exit_margin": 0.1,
+    "exit_tighten_prob": 0.4
   },
   "leverage": {
     "enabled": true,

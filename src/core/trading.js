@@ -46,7 +46,8 @@ export const DEFAULT_CONFIG = {
     maintenance_margin: 0.005,
   },
   // Jev AI decides entries (direction + order type) and exits (hold / tighten / close). Toggle with `tv order jev on|off`.
-  jev: { enabled: false, exits: true, rules_hint: false, entry_threshold: 0.6, min_quality: 3, exit_threshold: 0.75, exit_interval_s: 60, fallback: 'rules' },
+  jev: { enabled: false, exits: true, rules_hint: false, entry_min_prob: 0.4, entry_margin: 0.1, min_quality: 3, quality_min_p: 0.4,
+    exit_close_prob: 0.5, exit_margin: 0.1, exit_tighten_prob: 0.4, exit_interval_s: 60, fallback: 'rules' },
   trailing: {
     activate_r: 1,         // leave the original stop alone until the trade is +activate_r·R, then at least break-even
     t3_exit: true,         // close the position when T3 FAST crosses T3 SLOW against it on the last closed bar (atr_timeframe)
@@ -691,9 +692,9 @@ export async function trailStops({ symbol, dry_run = false, trail_atr_mult, min_
         const j = await jevExitCached(pos, { bars, price, side, cfg });
         if (j.error) base.jev = { error: j.error };
         else {
-          base.jev = { action: j.action, confidence: j.confidence, cached: j.cached };
+          base.jev = { action: j.action, probabilities: j.probabilities, cached: j.cached };
           if (j.action === 'close') {
-            const row = { ...base, action: 'jev_exit', reason: `Jev: close (confidence ${j.confidence?.toFixed(2)})` };
+            const row = { ...base, action: 'jev_exit', reason: `Jev: close (p ${j.probabilities?.close})` };
             if (!dry_run) {
               try { const res = await closePosition({ symbol: pos.symbol }); row.applied = res.verified; jevCache.delete(pos.symbol); }
               catch (err) { row.applied = false; row.error = err.message; }
@@ -712,7 +713,7 @@ export async function trailStops({ symbol, dry_run = false, trail_atr_mult, min_
             target = roundToStep(target, pos.min_tick, side === 1 ? 'floor' : 'ceil');
             const better = pos.stop_loss == null || (side === 1 ? target > pos.stop_loss : target < pos.stop_loss);
             if (better && (side === 1 ? target < price : target > price)) {
-              const row = { ...base, action: 'jev_tighten', new_sl: target, reason: `Jev: tighten (confidence ${j.confidence?.toFixed(2)})` };
+              const row = { ...base, action: 'jev_tighten', new_sl: target, reason: `Jev: tighten (p ${j.probabilities?.tighten})` };
               if (!dry_run) {
                 try { const res = await setBrackets({ symbol: pos.symbol, sl: target }); row.applied = res.verified; }
                 catch (err) { row.applied = false; row.error = err.message; }
