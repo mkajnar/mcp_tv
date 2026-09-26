@@ -1,4 +1,4 @@
-# Runs autoorder (with Jev AI decisions) repeatedly over the current top 50 Bybit perpetuals by 24h turnover.
+# Runs autoorder repeatedly over the current top 50 Bybit perpetuals by 24h turnover.
 # Each full pass fetches a fresh top-50 list, then walks it sequentially (autoorder switches the chart
 # per symbol, so it cannot run in parallel). Meant to be started hidden via Start-Process; see README.
 #
@@ -42,7 +42,6 @@ while ($true) {
       try { $parsed = $out | ConvertFrom-Json } catch {}
       if ($parsed) {
         $dec = $parsed.decision
-        $jev = $parsed.jev
         $plan = $parsed.order.plan
         # skip / error results have no decision (pending order or position already there, chart did not switch …)
         $reasons = @($dec.reasons)
@@ -51,7 +50,6 @@ while ($true) {
         Write-Output (@{
           ts = (Get-Date).ToUniversalTime().ToString("o"); symbol = $sym
           action = $action; side = $dec.side; type = $dec.type
-          jev_best = $jev.best_trade; jev_p_best = $jev.p_best; jev_p_wait = $jev.p_wait; jev_quality = $jev.quality
           reason = $reason; order_ok = $parsed.order.success
           entry = $plan.entry; sl = $plan.sl; tp = $plan.tp
         } | ConvertTo-Json -Compress)

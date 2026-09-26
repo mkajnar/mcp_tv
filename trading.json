@@ -15,20 +15,6 @@
     "slow": 21,
     "factor": 0.7
   },
-  "jev": {
-    "enabled": false,
-    "exits": true,
-    "rules_hint": false,
-    "min_quality": 3,
-    "exit_interval_s": 60,
-    "fallback": "rules",
-    "entry_min_prob": 0.3,
-    "entry_margin": -0.1,
-    "quality_min_p": 0.4,
-    "exit_close_prob": 0.5,
-    "exit_margin": 0.1,
-    "exit_tighten_prob": 0.4
-  },
   "leverage": {
     "enabled": true,
     "min": 10,

@@ -23,7 +23,6 @@ import { getOhlcv } from './data.js';
 import { setSymbol, setTimeframe, resetView } from './chart.js';
 import { captureScreenshot } from './capture.js';
 import { ema, t3State } from './ta.js';
-import { jevEntry } from './jev.js';
 
 export { ema };
 import { computeAtr, loadConfig, placeOrder, status, symbolSpec, roundToStep, logEvent, stopTooTight } from './trading.js';
@@ -237,7 +236,7 @@ export function decide(a, { bid, ask, min_tick, rr = 2, min_score = AUTO_DEFAULT
 }
 
 /**
- * Shared tail of every plan (rules or Jev): structural SL, stop width / cost guards and room to the next level.
+ * Shared tail of every plan: structural SL, stop width / cost guards and room to the next level.
  * Returns { ok, plan, nearest, roomR } or { ok: false, why, plan }.
  */
 export function finishPlan(a, { dir, type, entry, slRaw = null, slBasis = null, bid, ask, min_tick, rr = 2, cost_rate = 0.0004, min_sl_pct = 0.0015, max_cost_share = 0.3,
@@ -305,57 +304,6 @@ export function rangeZone(t, price) {
   return { high: hi, low: lo, position: Number(((price - lo) / (hi - lo)).toFixed(3)) };
 }
 
-/**
- * Entry price for an order type chosen by Jev (same conventions as the playbook):
- * market = ask/bid, limit = nearest EMA20 pullback (5m, else 15m), stop = 5m range edge when
- * compressed, otherwise beyond the 1m trigger bars. Returns { type, entry, slRaw, slBasis, note }.
- */
-export function entryForType(a, { dir, type, bid, ask, min_tick }) {
-  const m15 = a['15m'], m5 = a['5m'], m1 = a['1m'];
-  const market = dir === 1 ? ask : bid;
-  let entry, slRaw = null, slBasis = null, note = '';
-  if (type === 'limit') {
-    const cands = [m5.ema20, m15.ema20].filter(p => p != null && (dir === 1 ? p < ask : p > bid));
-    entry = cands.length ? cands[0] : market;
-    if (!cands.length) { type = 'market'; note = 'EMA20 already reached → market'; }
-  } else if (type === 'stop') {
-    if (m5.compressed) {
-      entry = (dir === 1 ? m5.range.high : m5.range.low) + dir * 0.1 * m5.atr;
-      slRaw = (dir === 1 ? m5.range.low : m5.range.high) - dir * 0.25 * m5.atr; slBasis = '5m range edge';
-    } else {
-      entry = dir === 1 ? Math.max(m1.last_bar.high, m1.prev_bar.high) + 0.1 * m1.atr : Math.min(m1.last_bar.low, m1.prev_bar.low) - 0.1 * m1.atr;
-    }
-    if (dir === 1 ? entry <= ask : entry >= bid) { type = 'market'; entry = market; slRaw = null; slBasis = null; note = 'trigger already crossed → market'; }
-  } else { type = 'market'; entry = market; }
-  if (type !== 'market') entry = roundToStep(entry, min_tick, (dir === 1) === (type === 'limit') ? 'floor' : 'ceil');
-  return { type, entry, slRaw, slBasis, note };
-}
-
-/** Minimal facts for Jev: per timeframe indicators + last 20 OHLCV bars, quote and the rules' opinion. */
-export function buildJevState({ symbol, analysis, bars, quote, ruleDecision, rulesHint = false }) {
-  const r = (x) => (x == null || !Number.isFinite(x) ? x : Number(x.toPrecision(6)));
-  const tfs = {};
-  for (const tf of TIMEFRAMES) {
-    const t = analysis[tf.key];
-    tfs[tf.key] = {
-      ...summarize(t),
-      swing_highs: t.swing_highs.map(r), swing_lows: t.swing_lows.map(r),
-      range: { high: r(t.range.high), low: r(t.range.low), size_atr: r(t.range.size_atr) },
-      t3: t.t3 ? { fast: r(t.t3.fast), slow: r(t.t3.slow), bull: t.t3.bull, cross: t.t3.cross, cross_bars_ago: t.t3.cross_bars_ago } : null,
-      last_bars_ohlcv: (bars[tf.key] || []).slice(-20).map(b => [r(b.open), r(b.high), r(b.low), r(b.close), r(b.volume)]),
-    };
-  }
-  return {
-    symbol, quote: { bid: quote.bid, ask: quote.ask },
-    location_1h_range: (() => { const z = rangeZone(analysis['1h'], (quote.bid + quote.ask) / 2);
-      return z ? { swing_low: r(z.low), swing_high: r(z.high), price_position: z.position, note: '0 = 1h swing low, 1 = 1h swing high' } : null; })(),
-    ohlcv_columns: ['open', 'high', 'low', 'close', 'volume'],
-    timeframes: tfs,
-    rules_engine_hint: rulesHint && ruleDecision ? { action: ruleDecision.action, side: ruleDecision.side, type: ruleDecision.type ?? null,
-      score: ruleDecision.score ?? null, last_reason: ruleDecision.reasons?.at(-1) ?? null } : null,
-  };
-}
-
 // ── Orchestration ───────────────────────────────────────────────────────
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
@@ -396,7 +344,7 @@ function summarize(t) {
  * place it through placeOrder (money management + guards). A 5m screenshot is taken
  * after the decision. The symbol stays on the chart; the original timeframe is restored.
  */
-export async function autoOrder({ symbol, dry_run = false, risk_usdt, min_score, min_bias, screenshot = true, jev } = {}) {
+export async function autoOrder({ symbol, dry_run = false, risk_usdt, min_score, min_bias, screenshot = true } = {}) {
   if (!symbol) throw new Error('symbol is required (e.g. BYBIT:BTCUSDT.P)');
   const cfg = loadConfig();
   const auto = { ...AUTO_DEFAULTS, ...(cfg.auto || {}) };
@@ -429,46 +377,14 @@ export async function autoOrder({ symbol, dry_run = false, risk_usdt, min_score,
 
   const analysis = {};
   try {
-    const rawBars = {};
-    for (const tf of TIMEFRAMES) {
-      rawBars[tf.key] = await loadBars(full, tf, auto.bars);
-      analysis[tf.key] = analyzeTimeframe(rawBars[tf.key], { t3: { ...T3_DEFAULTS, ...(cfg.t3 || {}) } });
-    }
+    for (const tf of TIMEFRAMES) analysis[tf.key] = analyzeTimeframe(await loadBars(full, tf, auto.bars), { t3: { ...T3_DEFAULTS, ...(cfg.t3 || {}) } });
 
     const spec = await symbolSpec(full);
-    const q = { bid: spec.bid, ask: spec.ask, min_tick: spec.min_tick, ...opts };
-    const ruleDecision = decide(analysis, q);
-    let decision = ruleDecision, jevInfo = null;
-
-    // Jev decides direction + order type; rules keep SL, guards, sizing. Toggle: config jev.enabled or the `jev` param.
-    const jcfg = cfg.jev || {};
-    if (jev ?? jcfg.enabled) {
-      try {
-        const state = buildJevState({ symbol: full, analysis, bars: rawBars, quote: spec, ruleDecision, rulesHint: !!jcfg.rules_hint });
-        const j = await jevEntry(state, jcfg);
-        jevInfo = { used: true, ...j };
-        const trends = ruleDecision.trends, bias = ruleDecision.bias;
-        if (!j.dir) {
-          decision = { bias, trends, action: 'wait', side: null, reasons: [j.why], rules: ruleDecision.action };
-        } else {
-          const e = entryForType(analysis, { dir: j.dir, type: j.type, ...q });
-          const fin = finishPlan(analysis, { ...q, dir: j.dir, ...e });
-          const reasons = [j.why, ...(e.note ? [e.note] : [])];
-          decision = fin.ok
-            ? { bias, trends, action: 'trade', ...fin.plan, reasons: [...reasons, fin.nearest == null ? 'No opposing level in range' : `${fin.roomR.toFixed(2)}R of room to ${fin.nearest}`,
-                ...(fin.zone ? [`Entry at ${(fin.zone.position * 100).toFixed(0)} % of the 1h range; TP ${fin.plan.tp} (${fin.plan.tp_basis})`] : [])],
-                nearest_level: fin.nearest, room_r: Number.isFinite(fin.roomR) ? Number(fin.roomR.toFixed(2)) : null, rules: ruleDecision.action }
-            : { bias, trends, action: 'wait', side: null, reasons: [...reasons, `Guard: ${fin.why}`], plan: fin.plan, rules: ruleDecision.action };
-        }
-      } catch (err) {
-        jevInfo = { used: false, error: err.message, fallback: jcfg.fallback || 'rules' };
-        if ((jcfg.fallback || 'rules') === 'wait') decision = { ...ruleDecision, action: 'wait', reasons: [...(ruleDecision.reasons || []), `Jev unavailable (${err.message}) — fallback wait`] };
-      }
-    }
+    const decision = decide(analysis, { bid: spec.bid, ask: spec.ask, min_tick: spec.min_tick, ...opts });
     const timeframes = Object.fromEntries(TIMEFRAMES.map(tf => [tf.key, summarize(analysis[tf.key])]));
-    logEvent({ event: 'autoorder_decision', symbol: full, dry_run, decision, jev: jevInfo, timeframes });
+    logEvent({ event: 'autoorder_decision', symbol: full, dry_run, decision, timeframes });
 
-    const result = { success: true, symbol: full, dry_run, decision, jev: jevInfo, timeframes, quote: { bid: spec.bid, ask: spec.ask }, order: null };
+    const result = { success: true, symbol: full, dry_run, decision, timeframes, quote: { bid: spec.bid, ask: spec.ask }, order: null };
     if (decision.action === 'trade') {
       result.order = await placeOrder({
         symbol: full, side: decision.side, type: decision.type,
