@@ -28,6 +28,14 @@ export async function getState() {
   return { success: true, ...state };
 }
 
+/** "Reset chart view" (Alt+R): scroll/zoom back so the latest bars are visible. */
+export async function resetView() {
+  try {
+    await evaluate(`(function() { ${CHART_API}.executeActionById('chartReset'); })()`);
+    return true;
+  } catch { return false; }
+}
+
 export async function setSymbol({ symbol }) {
   await evaluateAsync(`
     (function() {
@@ -39,7 +47,8 @@ export async function setSymbol({ symbol }) {
     })()
   `);
   const ready = await waitForChartReady(symbol);
-  return { success: true, symbol, chart_ready: ready };
+  const view_reset = await resetView();
+  return { success: true, symbol, chart_ready: ready, view_reset };
 }
 
 export async function setTimeframe({ timeframe }) {
@@ -50,7 +59,8 @@ export async function setTimeframe({ timeframe }) {
     })()
   `);
   const ready = await waitForChartReady(null, timeframe);
-  return { success: true, timeframe, chart_ready: ready };
+  const view_reset = await resetView();
+  return { success: true, timeframe, chart_ready: ready, view_reset };
 }
 
 export async function setType({ chart_type }) {

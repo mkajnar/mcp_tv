@@ -17,7 +17,7 @@
  */
 import { evaluate } from '../connection.js';
 import { getOhlcv } from './data.js';
-import { setSymbol, setTimeframe } from './chart.js';
+import { setSymbol, setTimeframe, resetView } from './chart.js';
 import { captureScreenshot } from './capture.js';
 import { ema, t3State } from './ta.js';
 
@@ -267,7 +267,7 @@ async function loadBars(symbol, tf, count) {
       const { bars } = await getOhlcv({ count });
       const diffs = bars.slice(-40).map((b, i, arr) => (i ? b.time - arr[i - 1].time : null)).filter(Boolean).sort((x, y) => x - y);
       const median = diffs[Math.floor(diffs.length / 2)];
-      if (st.symbol === symbol && median === tf.sec && bars.length >= 61) return bars;
+      if (st.symbol === symbol && median === tf.sec && bars.length >= 61) { await resetView(); return bars; }
       last = { symbol: st.symbol, resolution: st.resolution, median_spacing: median, bars: bars.length };
     } catch (err) { last = { error: err.message }; }
     await sleep(400);
