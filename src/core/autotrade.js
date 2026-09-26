@@ -302,9 +302,13 @@ export async function autoOrder({ symbol, dry_run = false, risk_usdt, min_score,
   }
 
   const st = await status({ symbol: full });
-  if (st.positions.length) {
+  const pending = st.working_orders.filter(o => o.bracket_of == null);
+  if (st.positions.length || pending.length) {
     await setTimeframe({ timeframe: original.resolution });
-    return { success: true, symbol: full, action: 'skip', reason: `A position on ${full} is already open (${st.positions[0].side} ${st.positions[0].qty}) — manage it with positions_trail` };
+    const reason = st.positions.length
+      ? `A position on ${full} is already open (${st.positions[0].side} ${st.positions[0].qty}) — manage it with positions_trail`
+      : `A pending ${pending[0].type} ${pending[0].side} order on ${full} is already working (id ${pending[0].id}) — cancel it first with order_cancel`;
+    return { success: true, symbol: full, action: 'skip', reason };
   }
 
   const analysis = {};
