@@ -38,6 +38,8 @@ export const DEFAULT_CONFIG = {
     min_step_atr: 0.1,     // move only if the stop improves by at least this many ATRs (avoids micro-updates)
     breakeven: true,       // also consider break-even (entry ± fees) once there is room for it
     switch_chart: true,    // temporarily switch the chart to read bars of positions on other symbols
+    bars_source: 'bybit',  // 'bybit' = ATR from Bybit public klines for BYBIT:*.P (no chart switching), 'chart' = active chart
+    atr_timeframe: '1',    // kline interval for the Bybit source (1, 5, 15, 60, D)
   },
 };
 
@@ -172,6 +174,32 @@ export function computeTrailStop({ side, entry, price, current_sl, atr, min_tick
   return { action: 'move', new_sl: newSl, basis, candidates, locked_per_unit: Number((side === -1 ? entry - newSl : newSl - entry).toFixed(8)) };
 }
 
+/** Closed + forming bars for a Bybit USDT perpetual from the public API, or null for other symbols. */
+async function bybitBars(symbol, interval = '1', limit = 200) {
+  const m = /^BYBIT:([A-Z0-9]+)\.P$/i.exec(symbol);
+  if (!m) return null;
+  const res = await fetch(`https://api.bybit.com/v5/market/kline?category=linear&symbol=${m[1].toUpperCase()}&interval=${interval}&limit=${limit}`);
+  const json = await res.json();
+  if (json.retCode !== 0) throw new Error(`Bybit kline ${m[1]}: ${json.retMsg}`);
+  return json.result.list.map(r => ({ time: Number(r[0]) / 1000, open: +r[1], high: +r[2], low: +r[3], close: +r[4], volume: +r[5] })).reverse();
+}
+
+/**
+ * Live bid/ask for a Bybit USDT perpetual, or null for other symbols / on failure.
+ * TradingView's quotesSnapshot is a cached value that goes stale for symbols that are not on the chart.
+ */
+export async function bybitQuote(symbol) {
+  const m = /^BYBIT:([A-Z0-9]+)\.P$/i.exec(symbol || '');
+  if (!m) return null;
+  try {
+    const res = await fetch(`https://api.bybit.com/v5/market/tickers?category=linear&symbol=${m[1].toUpperCase()}`);
+    const json = await res.json();
+    const t = json.retCode === 0 && json.result.list[0];
+    if (!t || !(+t.bid1Price > 0) || !(+t.ask1Price > 0)) return null;
+    return { bid: +t.bid1Price, ask: +t.ask1Price, last: +t.lastPrice, source: 'bybit' };
+  } catch { return null; }
+}
+
 // ── Broker bridge ───────────────────────────────────────────────────────
 
 /** Run an async body in the page with `b` = active broker, `t` = trading API. */
@@ -217,7 +245,7 @@ const ACCOUNT_JS = `
 `;
 
 async function getContext(symbol) {
-  return brokerEval(`
+  const ctx = await brokerEval(`
     ${ACCOUNT_JS}
     var chartSymbol = null; try { chartSymbol = window.TradingViewApi._activeChartWidgetWV.value().symbol(); } catch (e) {}
     var sym = ${JSON.stringify(symbol || null)};
@@ -233,6 +261,9 @@ async function getContext(symbol) {
       quote: { bid: q.bid, ask: q.ask, last: q.trade, is_delayed: q.isDelayed, tradable: q.is_tradable },
       positions: positions, working_orders: working };
   `, 15000);
+  const live = await bybitQuote(ctx.symbol);
+  if (live) ctx.quote = { ...ctx.quote, bid: live.bid, ask: live.ask, last: live.last, source: 'bybit' };
+  return ctx;
 }
 
 async function snapshot(symbol) {
@@ -441,7 +472,7 @@ export async function setBrackets({ symbol, sl, tp } = {}) {
  * Bars for ATR come from the active chart; positions on other symbols are read by
  * temporarily switching the chart (restored afterwards) unless switch_chart is false.
  */
-export async function trailStops({ symbol, dry_run = false, trail_atr_mult, min_gap_atr, min_step_atr, breakeven, switch_chart } = {}) {
+export async function trailStops({ symbol, dry_run = false, trail_atr_mult, min_gap_atr, min_step_atr, breakeven, switch_chart, bars_source } = {}) {
   const cfg = loadConfig();
   const tr = {
     trail_atr_mult: trail_atr_mult ?? cfg.trailing.trail_atr_mult,
@@ -449,6 +480,8 @@ export async function trailStops({ symbol, dry_run = false, trail_atr_mult, min_
     min_step_atr: min_step_atr ?? cfg.trailing.min_step_atr,
     breakeven: breakeven ?? cfg.trailing.breakeven,
     switch_chart: switch_chart ?? cfg.trailing.switch_chart,
+    bars_source: bars_source ?? cfg.trailing.bars_source,
+    atr_timeframe: cfg.trailing.atr_timeframe,
   };
   const ctx = await brokerEval(`
     ${ACCOUNT_JS}
@@ -471,15 +504,19 @@ export async function trailStops({ symbol, dry_run = false, trail_atr_mult, min_
   try {
     for (const pos of ctx.positions) {
       const side = pos.side === 'short' ? -1 : 1;
-      const price = side === -1 ? pos.ask : pos.bid;
-      const base = { symbol: pos.symbol, side: pos.side, qty: pos.qty, entry: pos.avg_price, price, current_sl: pos.stop_loss ?? null };
+      const live = await bybitQuote(pos.symbol);
+      const price = side === -1 ? (live ? live.ask : pos.ask) : (live ? live.bid : pos.bid);
+      const base = { symbol: pos.symbol, side: pos.side, qty: pos.qty, entry: pos.avg_price, price, quote_source: live ? 'bybit' : 'tradingview', current_sl: pos.stop_loss ?? null };
       if (!(side === -1 ? price < pos.avg_price : price > pos.avg_price)) { results.push({ ...base, action: 'skip', reason: 'position is not in profit' }); continue; }
-      if (pos.symbol !== ctx.chart_symbol) {
-        if (!tr.switch_chart) { results.push({ ...base, action: 'skip', reason: `not on the active chart (${ctx.chart_symbol}) and switch_chart is off` }); continue; }
-        await setSymbol({ symbol: pos.symbol });
-        switched = true;
+      let bars = tr.bars_source === 'bybit' ? await bybitBars(pos.symbol, tr.atr_timeframe) : null;
+      if (!bars) {
+        if (pos.symbol !== ctx.chart_symbol) {
+          if (!tr.switch_chart) { results.push({ ...base, action: 'skip', reason: `not on the active chart (${ctx.chart_symbol}) and switch_chart is off` }); continue; }
+          await setSymbol({ symbol: pos.symbol });
+          switched = true;
+        }
+        ({ bars } = await getOhlcv({ count: 300 }));
       }
-      const { bars } = await getOhlcv({ count: 300 });
       const atr = computeAtr(bars, cfg.atr_length);
       const plan = computeTrailStop({ side, entry: pos.avg_price, price, current_sl: pos.stop_loss ?? null, atr, min_tick: pos.min_tick,
         trail_atr_mult: tr.trail_atr_mult, min_gap_atr: tr.min_gap_atr, min_step_atr: tr.min_step_atr, fee_rate: cfg.fee_rate, breakeven: tr.breakeven });
