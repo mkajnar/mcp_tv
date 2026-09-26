@@ -6,7 +6,7 @@
  */
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { planOrder, computeSwingAtr, computeTrailStop, computeLeverage, roundToStep, parseSide } from '../src/core/trading.js';
+import { planOrder, computeSwingAtr, computeTrailStop, computeLeverage, stopTooTight, roundToStep, parseSide } from '../src/core/trading.js';
 
 const MM = { fee_rate: 0.0002, slippage_rate: 0.0002, rr: 2, risk_usdt: 100 };
 
@@ -169,6 +169,19 @@ describe('computeLeverage', () => {
       const r = computeLeverage({ vol_pct: v, sl_pct: v / 2 });
       if (r.ok) assert.ok(r.liq_dist_pct >= r.required_liq_dist_pct - 1e-9);
     }
+  });
+});
+
+describe('stopTooTight', () => {
+  it('refuses the XAU weekend stop (0.21 on 4288)', () => {
+    assert.match(stopTooTight({ entry: 4288.03, dist: 0.21, cost_per_unit: 3.43 }), /too tight/);
+  });
+  it('refuses when costs dominate even above min_sl_pct', () => {
+    // 0.2 % stop, 0.16 % round-trip costs → 44 % of risk
+    assert.match(stopTooTight({ entry: 100, dist: 0.2, cost_per_unit: 0.16 }), /fees \+ slippage/);
+  });
+  it('accepts a normal 1 % stop', () => {
+    assert.equal(stopTooTight({ entry: 100, dist: 1, cost_per_unit: 0.08 }), null);
   });
 });
 

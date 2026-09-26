@@ -22,7 +22,7 @@ import { captureScreenshot } from './capture.js';
 import { ema, t3State } from './ta.js';
 
 export { ema };
-import { computeAtr, loadConfig, placeOrder, status, symbolSpec, roundToStep, logEvent } from './trading.js';
+import { computeAtr, loadConfig, placeOrder, status, symbolSpec, roundToStep, logEvent, stopTooTight } from './trading.js';
 
 const CHART_API = 'window.TradingViewApi._activeChartWidgetWV.value()';
 
@@ -155,7 +155,8 @@ export function analyzeTimeframe(rawBars, { pivot = 3, t3 = T3_DEFAULTS } = {}) 
  * a = { '1d', '1h', '15m', '5m', '1m' } → analyzeTimeframe results.
  * Returns { action: 'trade' | 'wait', side, type, entry, sl, score, reasons, ... }.
  */
-export function decide(a, { bid, ask, min_tick, rr = 2, min_score = AUTO_DEFAULTS.min_score, min_bias = AUTO_DEFAULTS.min_bias }) {
+export function decide(a, { bid, ask, min_tick, rr = 2, min_score = AUTO_DEFAULTS.min_score, min_bias = AUTO_DEFAULTS.min_bias,
+  cost_rate = 0.0004, min_sl_pct = 0.0015, max_cost_share = 0.3 }) {
   const reasons = [];
   const bias = TIMEFRAMES.reduce((s, tf) => s + tf.weight * a[tf.key].trend, 0);
   const base = { bias: Number(bias.toFixed(3)), trends: Object.fromEntries(TIMEFRAMES.map(tf => [tf.key, a[tf.key].trend])) };
@@ -220,6 +221,8 @@ export function decide(a, { bid, ask, min_tick, rr = 2, min_score = AUTO_DEFAULT
   const dist = Math.abs(entry - sl);
   const plan = { side, type, entry, sl, sl_basis: slBasis, dist: Number(dist.toFixed(8)) };
   if (dist > 3 * m15.atr) return wait(`Structural stop too wide: ${(dist / m15.atr).toFixed(1)} ATR(15m) > 3`, { plan });
+  const tight = stopTooTight({ entry, dist, cost_per_unit: cost_rate * (entry + sl), min_sl_pct, max_cost_share });
+  if (tight) return wait(`${tight} — market too quiet for a money-managed stop`, { plan });
 
   // Room to the next opposing level: 1h / 15m swings and the previous daily high/low.
   // Levels the market has already broken (between a pending entry and the current price) are not obstacles.
@@ -260,7 +263,7 @@ async function chartState() {
 async function loadBars(symbol, tf, count) {
   await setTimeframe({ timeframe: tf.res });
   const deadline = Date.now() + 20000;
-  let last = null;
+  let last = null, lastFix = Date.now();
   while (Date.now() < deadline) {
     try {
       const st = await chartState();
@@ -268,6 +271,7 @@ async function loadBars(symbol, tf, count) {
       const diffs = bars.slice(-40).map((b, i, arr) => (i ? b.time - arr[i - 1].time : null)).filter(Boolean).sort((x, y) => x - y);
       const median = diffs[Math.floor(diffs.length / 2)];
       if (st.symbol === symbol && median === tf.sec && bars.length >= 61) { await resetView(); return bars; }
+      if (st.symbol !== symbol && Date.now() - lastFix > 3000) { await setSymbol({ symbol }); await setTimeframe({ timeframe: tf.res }); lastFix = Date.now(); }
       last = { symbol: st.symbol, resolution: st.resolution, median_spacing: median, bars: bars.length };
     } catch (err) { last = { error: err.message }; }
     await sleep(400);
@@ -291,15 +295,21 @@ export async function autoOrder({ symbol, dry_run = false, risk_usdt, min_score,
   if (!symbol) throw new Error('symbol is required (e.g. BYBIT:BTCUSDT.P)');
   const cfg = loadConfig();
   const auto = { ...AUTO_DEFAULTS, ...(cfg.auto || {}) };
-  const opts = { min_score: min_score ?? auto.min_score, min_bias: min_bias ?? auto.min_bias, rr: cfg.rr };
+  const opts = { min_score: min_score ?? auto.min_score, min_bias: min_bias ?? auto.min_bias, rr: cfg.rr,
+    cost_rate: cfg.fee_rate + cfg.slippage_rate, min_sl_pct: cfg.min_sl_pct, max_cost_share: cfg.max_cost_share };
 
   const original = await chartState();
-  await setSymbol({ symbol });
-  const { symbol: full } = await chartState();
   const bare = symbol.includes(':') ? symbol.toUpperCase() : ':' + symbol.toUpperCase();
-  if (!(full.toUpperCase() === symbol.toUpperCase() || full.toUpperCase().endsWith(bare))) {
-    throw new Error(`Chart did not switch to ${symbol} (shows ${full}). Use the full ticker, e.g. BYBIT:BTCUSDT.P`);
+  const isTarget = (s) => s.toUpperCase() === symbol.toUpperCase() || s.toUpperCase().endsWith(bare);
+  // TradingView can jump to the symbol of a just-filled order — retry the switch
+  let full = null;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    await setSymbol({ symbol });
+    await sleep(attempt * 700);
+    ({ symbol: full } = await chartState());
+    if (isTarget(full)) break;
   }
+  if (!isTarget(full)) throw new Error(`Chart did not switch to ${symbol} after 3 attempts (shows ${full}). Use the full ticker, e.g. BYBIT:BTCUSDT.P`);
 
   const st = await status({ symbol: full });
   const pending = st.working_orders.filter(o => o.bracket_of == null);

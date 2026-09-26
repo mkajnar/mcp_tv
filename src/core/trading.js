@@ -32,6 +32,8 @@ export const DEFAULT_CONFIG = {
   pivot_length: 3,       // swing = pivot with N bars left and N bars right
   fee_rate: 0.0002,      // per side, applied to entry + exit price
   slippage_rate: 0.0002, // modelled the same way as fees
+  min_sl_pct: 0.0015,    // stop closer than 0.15 % of price is refused (noise / flat-market stops)
+  max_cost_share: 0.3,   // fees + slippage may be at most 30 % of the per-unit risk
   allow_live: false,     // live (non-demo) accounts refused unless true or TV_ALLOW_LIVE_TRADING=1
   t3: { fast: 8, slow: 21, factor: 0.7 }, // Tillson T3 FAST / SLOW used by autoorder and the T3 exit
   leverage: {
@@ -222,6 +224,18 @@ export async function bybitQuote(symbol) {
     if (!t || !(+t.bid1Price > 0) || !(+t.ask1Price > 0)) return null;
     return { bid: +t.bid1Price, ask: +t.ask1Price, last: +t.lastPrice, source: 'bybit' };
   } catch { return null; }
+}
+
+/**
+ * Refuses stops that are only noise: closer than min_sl_pct of the price, or so close that
+ * fees + slippage make up more than max_cost_share of the risk (XAU weekend case: 0.005 % stop,
+ * 94 % of the risk was costs). Returns the reason, or null when the stop is fine.
+ */
+export function stopTooTight({ entry, dist, cost_per_unit, min_sl_pct = 0.0015, max_cost_share = 0.3 }) {
+  if (dist / entry < min_sl_pct) return `Stop too tight: ${(dist / entry * 100).toFixed(3)} % of price < ${(min_sl_pct * 100).toFixed(2)} %`;
+  const share = cost_per_unit / (dist + cost_per_unit);
+  if (share > max_cost_share) return `Stop too tight: fees + slippage are ${(share * 100).toFixed(0)} % of the risk (max ${(max_cost_share * 100).toFixed(0)} %)`;
+  return null;
 }
 
 /**
@@ -434,6 +448,8 @@ export async function placeOrder(params = {}) {
     min_tick: si.min_tick, qty_step: si.qty_step, qty_min: si.qty_min,
   });
   if (plan.planned_risk > cfg.max_risk_usdt) throw new Error(`Planned risk ${plan.planned_risk} exceeds max_risk_usdt ${cfg.max_risk_usdt}`);
+  const tight = stopTooTight({ entry, dist: plan.dist, cost_per_unit: plan.commission_per_unit + plan.slippage_per_unit, min_sl_pct: cfg.min_sl_pct, max_cost_share: cfg.max_cost_share });
+  if (tight) throw new Error(tight);
   plan.margin = si.margin_rate ? Number((plan.notional * si.margin_rate).toFixed(4)) : null;
 
   let leverage = null;

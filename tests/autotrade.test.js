@@ -163,6 +163,13 @@ describe('decide', () => {
     assert.equal(d.score_breakdown.t3, 10);
   });
 
+  it('waits when the stop is too tight for the costs (flat market)', () => {
+    const a = up(); for (const k of ['5m', '15m', '1m']) { a[k].atr = 0.01; a[k].swing_lows = [99.99]; }
+    const d = decide(a, Q);
+    assert.equal(d.action, 'wait');
+    assert.match(d.reasons.at(-1), /too tight/);
+  });
+
   it('waits when resistance is closer than rr·R', () => {
     const a = up(); a['1h'].swing_highs = [101];
     const d = decide(a, Q);

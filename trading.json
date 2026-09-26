@@ -7,6 +7,8 @@
   "pivot_length": 3,
   "fee_rate": 0.0002,
   "slippage_rate": 0.0002,
+  "min_sl_pct": 0.0015,
+  "max_cost_share": 0.3,
   "allow_live": false,
   "t3": {
     "fast": 8,
