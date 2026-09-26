@@ -136,7 +136,9 @@ export function evaluate(answers, questions) {
     } else if (q.type === 'score') {
       const level = Math.max(0, Math.min(q.criteria.length - 1, Math.round(Number(a.score))));
       const conf = Number(a.confidence ?? 0);
-      out[name] = { value: level, label: q.criteria[level], raw: a.score, confidence: conf, probabilities: a.probabilities ?? null, binding: conf >= t };
+      // Jev score is 0-indexed (response `legend` {"0": first criterion, ...}); `score` is the expected level
+      const label = a.legend?.[String(level)] ?? q.criteria[level];
+      out[name] = { value: level, label, raw: a.score, confidence: conf, probabilities: a.probabilities ?? null, binding: conf >= t };
     }
   }
   return out;
@@ -180,6 +182,15 @@ export function exitQuestions({ exit_threshold = 0.75 } = {}) {
   };
 }
 
+/**
+ * Probability mass of levels ≥ minIndex (0-indexed). Gating on this instead of the rounded
+ * expected score keeps an undecided spread (e.g. 0.30 Weak / 0.38 Average / 0.29 Good) from passing.
+ */
+export function probAtLeast(q, minIndex) {
+  if (!q.probabilities) return q.value >= minIndex ? 1 : 0;
+  return Object.entries(q.probabilities).reduce((s, [k, p]) => s + (Number(k) >= minIndex ? Number(p) : 0), 0);
+}
+
 /** Entry decision → { action, dir, type, binding, confidence, quality, ... } */
 export async function jevEntry(state, cfgJev = {}) {
   const questions = entryQuestions(cfgJev);
@@ -187,16 +198,17 @@ export async function jevEntry(state, cfgJev = {}) {
   const ev = evaluate(res.answers, questions);
   const act = ev.action, q = ev.setup_quality;
   const minQ = cfgJev.min_quality ?? 3;
-  const qualityLevel = q ? q.value + 1 : null;  // 1..5
+  const qualityLevel = q ? q.value + 1 : null;  // 1..5 (Jev levels are 0-indexed)
+  const qualityP = q ? probAtLeast(q, minQ - 1) : null;
   let decision = 'wait', why;
   if (!act?.binding) why = `Jev action "${act?.value}" not binding (confidence ${act?.confidence?.toFixed?.(2)} < ${questions.action.threshold})`;
   else if (act.value === 'wait') why = 'Jev: wait';
-  else if (qualityLevel != null && qualityLevel < minQ) why = `Jev setup quality ${qualityLevel}/5 (${q.label}) < ${minQ}`;
-  else { decision = act.value; why = `Jev: ${act.value} (confidence ${act.confidence.toFixed(2)}, quality ${qualityLevel}/5)`; }
+  else if (qualityP != null && qualityP < 0.5) why = `Jev setup quality ${qualityLevel}/5 (${q.label}): P(quality ≥ ${minQ}/5) = ${qualityP.toFixed(2)} < 0.5`;
+  else { decision = act.value; why = `Jev: ${act.value} (confidence ${act.confidence.toFixed(2)}, quality ${qualityLevel}/5, P(≥${minQ}) ${qualityP?.toFixed(2)})`; }
   const [side, type] = decision === 'wait' ? [null, null] : decision.split('_');
   return { action: decision, side, type, dir: side === 'long' ? 1 : side === 'short' ? -1 : 0, why,
     raw_action: act?.value, confidence: act?.confidence ?? null, probabilities: act?.probabilities ?? null,
-    quality: qualityLevel, quality_label: q?.label ?? null, elapsedMs: res.elapsedMs, credits: res.credits };
+    quality: qualityLevel, quality_label: q?.label ?? null, quality_raw: q?.raw ?? null, quality_p_min: qualityP, elapsedMs: res.elapsedMs, credits: res.credits };
 }
 
 /** Exit decision → { action: hold | tighten | close, binding, confidence } */

@@ -5,7 +5,7 @@
  */
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseResponse, evaluate, entryQuestions, exitQuestions, scrub, ENTRY_ACTIONS } from '../src/core/jev.js';
+import { parseResponse, evaluate, entryQuestions, exitQuestions, scrub, ENTRY_ACTIONS, probAtLeast } from '../src/core/jev.js';
 import { entryForType, finishPlan } from '../src/core/autotrade.js';
 
 describe('parseResponse', () => {
@@ -46,6 +46,22 @@ describe('evaluate (agent-orch binding rules)', () => {
     const r = evaluate({ rate: { score: 7.2, confidence: 0.9 } }, { rate: qs.rate }).rate;
     assert.equal(r.value, 2);
     assert.equal(r.label, 'High');
+  });
+});
+
+describe('score scale (Jev levels are 0-indexed, verified live)', () => {
+  const q = { rate: { type: 'score', threshold: 0.5, criteria: ['Poor', 'Weak', 'Average', 'Good', 'Excellent'], instructions: 'x' } };
+  const legend = { 0: 'Poor', 1: 'Weak', 2: 'Average', 3: 'Good', 4: 'Excellent' };
+  it('score 0 = first criterion, 4 = last, label from the legend', () => {
+    assert.equal(evaluate({ rate: { score: 0, legend, confidence: 1 } }, q).rate.label, 'Poor');
+    assert.equal(evaluate({ rate: { score: 4, legend, confidence: 1 } }, q).rate.label, 'Excellent');
+  });
+  it('quality gate uses probability mass, not the rounded mean', () => {
+    // ETH case: mean 1.96 → "Average", but only 0.30 + 0.01 mass is Good+ … and 0.68 is Average+
+    const r = evaluate({ rate: { score: 1.96, legend, confidence: 0.45, probabilities: { 0: 0.02, 1: 0.3, 2: 0.38, 3: 0.29, 4: 0.01 } } }, q).rate;
+    assert.equal(r.value, 2);
+    assert.ok(Math.abs(probAtLeast(r, 2) - 0.68) < 1e-9);  // P(≥ Average)
+    assert.ok(Math.abs(probAtLeast(r, 3) - 0.30) < 1e-9);  // P(≥ Good)
   });
 });
 
