@@ -109,6 +109,24 @@ describe('computeTrailStop', () => {
     assert.equal(r.action, 'keep');
   });
 
+  it('activate_r: a trade that only ticks into profit keeps its structural stop (FARTCOIN replay)', () => {
+    const r = computeTrailStop({ ...T, activate_r: 1, side: 1, entry: 0.19408, price: 0.19419, current_sl: 0.19311, atr: 0.0004, min_tick: 0.00001 });
+    assert.equal(r.action, 'skip');
+    assert.match(r.reason, /waiting for \+1R/);
+  });
+
+  it('activate_r: at +1R the stop goes at least to break-even, then the ATR trail', () => {
+    const r = computeTrailStop({ ...T, activate_r: 1, side: 1, entry: 0.19408, price: 0.19505, current_sl: 0.19311, atr: 0.0004, min_tick: 0.00001 });
+    assert.equal(r.action, 'move');
+    assert.ok(r.new_sl > 0.19408, `stop ${r.new_sl} must be above entry`);
+  });
+
+  it('activate_r: once the stop is beyond entry the trail runs normally', () => {
+    const r = computeTrailStop({ ...T, activate_r: 1, side: 1, entry: 100, price: 103, current_sl: 100.5, atr: 1, min_tick: 0.01 });
+    assert.equal(r.action, 'move');
+    assert.equal(r.new_sl, 102);
+  });
+
   it('keeps the minimum gap to price', () => {
     const r = computeTrailStop({ ...T, trail_atr_mult: 0.1, side: 1, entry: 100, price: 110, current_sl: 90, atr: 2, min_tick: 0.01 });
     assert.equal(r.basis, 'min_gap');

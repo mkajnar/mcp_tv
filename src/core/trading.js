@@ -41,13 +41,14 @@ export const DEFAULT_CONFIG = {
     maintenance_margin: 0.005,
   },
   trailing: {
+    activate_r: 1,         // leave the original stop alone until the trade is +activate_r·R, then at least break-even
     trail_atr_mult: 1.0,   // ATR trail: SL = price ± trail_atr_mult * ATR
     min_gap_atr: 0.25,     // SL never closer to price than min_gap_atr * ATR
     min_step_atr: 0.1,     // move only if the stop improves by at least this many ATRs (avoids micro-updates)
     breakeven: true,       // also consider break-even (entry ± fees) once there is room for it
     switch_chart: true,    // temporarily switch the chart to read bars of positions on other symbols
     bars_source: 'bybit',  // 'bybit' = ATR from Bybit public klines for BYBIT:*.P (no chart switching), 'chart' = active chart
-    atr_timeframe: '1',    // kline interval for the Bybit source (1, 5, 15, 60, D)
+    atr_timeframe: '5',    // kline interval for the Bybit source (1, 5, 15, 60, D) — 5m matches the entry/stop structure
   },
 };
 
@@ -160,13 +161,24 @@ export function planOrder({ side, entry, sl, tp, rr, qty, risk_usdt, fee_rate, s
 /**
  * Profit-protecting trailing stop for an open position (never loosens the stop).
  * price = the side that would trigger the stop (ask for a short, bid for a long).
+ *
+ * While the stop is still on the losing side of entry it is the original stop, so it defines R.
+ * With activate_r > 0 nothing moves until the trade is +activate_r·R; the first move is at least
+ * break-even (entry ± fees), afterwards the ATR trail takes over. A trade that only ticks into
+ * profit keeps its full structural stop (FARTCOINUSDT.P was choked at +0.12R by an early 1m trail).
  */
-export function computeTrailStop({ side, entry, price, current_sl, atr, min_tick, trail_atr_mult, min_gap_atr, min_step_atr = 0, fee_rate, breakeven }) {
+export function computeTrailStop({ side, entry, price, current_sl, atr, min_tick, trail_atr_mult, min_gap_atr, min_step_atr = 0, fee_rate, breakeven, activate_r = 0 }) {
   const inProfit = side === -1 ? price < entry : price > entry;
   if (!inProfit) return { action: 'skip', reason: 'position is not in profit' };
+  const profit = side === -1 ? entry - price : price - entry;
+  const riskDist = current_sl == null ? null : (side === -1 ? current_sl - entry : entry - current_sl);
+  const activating = activate_r > 0 && riskDist > 0;
+  if (activating && profit < activate_r * riskDist) {
+    return { action: 'skip', reason: `waiting for +${activate_r}R before trailing (now +${(profit / riskDist).toFixed(2)}R)`, r_multiple: Number((profit / riskDist).toFixed(3)) };
+  }
   const gap = min_gap_atr * atr;
   const candidates = { atr: side === -1 ? price + trail_atr_mult * atr : price - trail_atr_mult * atr };
-  if (breakeven) {
+  if (breakeven || activating) {
     const be = side === -1 ? entry * (1 - 2 * fee_rate) : entry * (1 + 2 * fee_rate);
     if (side === -1 ? be >= price + gap : be <= price - gap) candidates.breakeven = be;
   }
@@ -545,6 +557,7 @@ export async function setBrackets({ symbol, sl, tp } = {}) {
 export async function trailStops({ symbol, dry_run = false, trail_atr_mult, min_gap_atr, min_step_atr, breakeven, switch_chart, bars_source } = {}) {
   const cfg = loadConfig();
   const tr = {
+    activate_r: cfg.trailing.activate_r,
     trail_atr_mult: trail_atr_mult ?? cfg.trailing.trail_atr_mult,
     min_gap_atr: min_gap_atr ?? cfg.trailing.min_gap_atr,
     min_step_atr: min_step_atr ?? cfg.trailing.min_step_atr,
@@ -591,7 +604,8 @@ export async function trailStops({ symbol, dry_run = false, trail_atr_mult, min_
       }
       const atr = computeAtr(bars, cfg.atr_length);
       const plan = computeTrailStop({ side, entry: pos.avg_price, price, current_sl: pos.stop_loss ?? null, atr, min_tick: pos.min_tick,
-        trail_atr_mult: tr.trail_atr_mult, min_gap_atr: tr.min_gap_atr, min_step_atr: tr.min_step_atr, fee_rate: cfg.fee_rate, breakeven: tr.breakeven });
+        trail_atr_mult: tr.trail_atr_mult, min_gap_atr: tr.min_gap_atr, min_step_atr: tr.min_step_atr, fee_rate: cfg.fee_rate, breakeven: tr.breakeven,
+        activate_r: tr.activate_r });
       const row = { ...base, atr, ...plan };
       if (plan.action === 'move') {
         row.locked_profit = Number((plan.locked_per_unit * pos.qty).toFixed(4));
