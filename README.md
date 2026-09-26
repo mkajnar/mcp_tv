@@ -1,6 +1,6 @@
 # mcp_tv — TradingView MCP with order execution
 
-Fork of [tradingview-mcp-jackson](https://github.com/LewisWJackson/tradingview-mcp-jackson) (itself built on [tradingview-mcp](https://github.com/tradesdontlie/tradingview-mcp)). Everything below the next section is the upstream documentation.
+Fork of [tradingview-mcp-jackson](https://github.com/LewisWJackson/tradingview-mcp-jackson) (itself built on [tradingview-mcp](https://github.com/tradesdontlie/tradingview-mcp)). Czech guide: [README_CZ.md](README_CZ.md). The upstream documentation follows after the mcp_tv sections.
 
 ## Added in mcp_tv: order execution with money management
 
@@ -45,6 +45,141 @@ Orders go to the broker connected in TradingView's Trading Panel (**Paper Tradin
 Unit tests: `node --test tests/trading.test.js tests/autotrade.test.js`.
 
 ---
+
+## Guide: using mcp_tv with an AI assistant (Claude Code)
+
+> 🇨🇿 Czech version: [README_CZ.md](README_CZ.md)
+
+The idea: TradingView Desktop runs on your PC, this MCP server talks to it over the Chrome DevTools Protocol (CDP), and the AI assistant (Claude Code, Claude Desktop or any MCP client) calls the server's tools. You talk to the AI in plain language ("autoorder BTC", "trail my positions", "what orders are open?") and it picks the tools.
+
+### 1. Install
+
+```bash
+git clone https://github.com/mkajnar/mcp_tv.git
+cd mcp_tv
+npm install
+```
+
+Requirements: Node.js 18+, TradingView Desktop (a subscription with real-time data is recommended), Trading Panel connected to **Paper Trading** (default, safe).
+
+### 2. Start TradingView with CDP (port 9222)
+
+- **Windows Store (Appx) build:** `powershell -ExecutionPolicy Bypass -File scripts/launch-tv-cdp.ps1`
+- **Classic install / macOS / Linux:** ask the AI to call `tv_launch`, or start TradingView with `--remote-debugging-port=9222`.
+
+Check: `http://localhost:9222/json/version` must answer. In TradingView open a chart and connect the Trading Panel to Paper Trading.
+
+### 3. Register the MCP server in your AI client
+
+**Claude Code** — `.mcp.json` in your project (or `claude mcp add`):
+
+```json
+{
+  "mcpServers": {
+    "tradingview": {
+      "command": "node",
+      "args": ["C:/path/to/mcp_tv/src/server.js"]
+    }
+  }
+}
+```
+
+**Claude Desktop** — the same block in `claude_desktop_config.json`.
+
+Restart the client (in Claude Code run `/mcp` → reconnect). Ask: *"run tv_health_check"* — it should report the connected chart.
+
+Optional: pre-approve the trading tools in `.claude/settings.local.json` so the AI does not ask every time:
+
+```json
+{ "permissions": { "allow": [
+  "mcp__tradingview__order_place", "mcp__tradingview__order_status", "mcp__tradingview__order_cancel",
+  "mcp__tradingview__position_close", "mcp__tradingview__position_set_brackets",
+  "mcp__tradingview__positions_trail", "mcp__tradingview__autoorder"
+] } }
+```
+
+### 4. Configure money management
+
+Edit `trading.json` (repo root) or `~/.tradingview-mcp/trading.json` (overrides). Key values:
+
+| Key | Default | Meaning |
+|---|---|---|
+| `risk_usdt` | 100 | Money lost at SL, incl. fees + slippage — qty is sized from it |
+| `max_risk_usdt` | 500 | Hard cap per order |
+| `rr` | 2 | TP = rr × SL distance |
+| `min_sl_pct` / `max_cost_share` | 0.15 % / 30 % | Refuse noise-tight stops |
+| `leverage.min` / `max` | 10 / 50 | Volatility-based leverage range |
+| `trailing.activate_r` | 1 | Trail starts at +1R (break-even first) |
+| `trailing.t3_exit` | true | Close position on a 5m T3 cross against it |
+| `t3` | 8 / 21 / 0.7 | T3 FAST / SLOW / volume factor |
+| `auto.min_score` / `min_bias` | 65 / 0.35 | autoorder strictness |
+| `allow_live` | false | Live accounts refused unless true |
+
+### 5. Talk to the AI — example prompts
+
+| You say | The AI does |
+|---|---|
+| "What is on my account?" | `order_status` — balance, positions, pending orders |
+| "Short BTC per money management" | `order_place` side=sell — SL from swing + ATR, TP 2R, qty from risk |
+| "Buy limit ETH at 2650, SL 2610" | `order_place` side=buy type=limit price=2650 sl=2610 |
+| "autoorder BYBIT:SOLUSDT.P" | `autoorder` — 1D/1h/15m/5m/1m analysis, trades only if the playbook qualifies |
+| "autoorder on the top 30 Bybit tickers" | loops `autoorder` over the list, summarizes TRADE / WAIT / SKIP |
+| "autoorder BTC, just a dry run" | `autoorder` dry_run=true — decision and plan, nothing sent |
+| "Trail my positions" | `positions_trail` — tightens SL of all profitable positions |
+| "Move the SL on ETH to 2640" | `position_set_brackets` |
+| "Close SOL" / "Cancel all orders" | `position_close` / `order_cancel` |
+| "Show me a 5m chart of ENA" | `chart_set_symbol` + `chart_set_timeframe` + `capture_screenshot` |
+
+Tips:
+- Use full tickers (`BYBIT:BTCUSDT.P`) — short names can resolve to another exchange.
+- Tell the AI whether you want screenshots; `autoorder` accepts `screenshot=false`.
+- `autoorder` skips a symbol that already has a position or a pending entry — cancel first if you want a new plan.
+- While autoorder loops, don't click symbols in TradingView; the chart may jump to a symbol whose order just filled (autoorder retries 3× and then skips).
+
+### 6. Run the trailing stop in the background
+
+The AI only acts when you talk to it. To protect profit continuously, run the trail loop as a separate process:
+
+```bash
+node src/cli/index.js order trail --watch 5
+```
+
+Windows (hidden, with log):
+
+```powershell
+Start-Process node -ArgumentList "src/cli/index.js","order","trail","--watch","5" -WorkingDirectory C:\path\to\mcp_tv -WindowStyle Hidden -RedirectStandardOutput "$HOME\.tradingview-mcp\trail.log" -RedirectStandardError "$HOME\.tradingview-mcp\trail.err.log"
+```
+
+It prints one JSON line per position per tick (`skip` / `move` / `t3_exit`). Restart it after changing the code or `trading.json`.
+
+### 7. The same without the AI (CLI)
+
+```bash
+node src/cli/index.js order status
+node src/cli/index.js order place sell --risk 100 --dry-run
+node src/cli/index.js order auto BYBIT:BTCUSDT.P --no-screenshot [--dry-run]
+node src/cli/index.js order trail --watch 5
+node src/cli/index.js order cancel
+```
+
+### 8. How autoorder decides (short)
+
+1. Top-down bias from 1D/1h/15m/5m/1m (weights .30/.30/.20/.15/.05); needs |bias| ≥ `min_bias`, 1h and 15m must agree.
+2. T3 gate: 15m T3 FAST/SLOW must agree with the direction; a fresh 5m counter-cross = WAIT.
+3. Order type: **market** (pullback into value + 1m or T3 trigger), **limit** (extended → EMA20 pullback), **stop** (5m compression breakout / above trigger bars).
+4. Structural SL behind the 5m swing (± 0.5 ATR); refused if too wide (> 3 ATR 15m) or too tight (`min_sl_pct`, `max_cost_share`).
+5. Needs ≥ rr·R room to the next 1h/15m/daily level and a confluence score ≥ `min_score`.
+6. Sends via `order_place` (money management, leverage 10–50× from 1h volatility, verification, audit log).
+
+### 9. Logs and troubleshooting
+
+- Audit log: `~/.tradingview-mcp/orders/YYYY-MM-DD.jsonl` (decisions, intents, fills, trail moves).
+- "CDP not reachable" → TradingView was not started with port 9222.
+- New code not used by the AI → `/mcp` reconnect in Claude Code.
+- "Chart did not switch" → the symbol does not exist on TradingView or the chart jumped; rerun it.
+- Paper Trading ignores leverage changes via API; the computed leverage is reported only.
+
+⚠️ This is a tool, not financial advice. The playbook is not backtested — use Paper Trading and `dry_run` first.
 
 # TradingView MCP Jackson (upstream documentation)
 
