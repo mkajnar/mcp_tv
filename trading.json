@@ -39,6 +39,7 @@
     "min_bias": 0.35,
     "bars": 400,
     "zone_max": 0.5,
-    "tp_at_level": true
+    "tp_at_level": true,
+    "t3_pullback_limit": true
   }
 }

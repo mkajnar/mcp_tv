@@ -5,7 +5,7 @@
  */
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { ema, rsi, adx, swings, analyzeTimeframe, decide, rangeZone } from '../src/core/autotrade.js';
+import { ema, rsi, adx, swings, analyzeTimeframe, decide, rangeZone, pullbackLimit } from '../src/core/autotrade.js';
 import { t3, t3State } from '../src/core/ta.js';
 
 describe('indicators', () => {
@@ -142,16 +142,47 @@ describe('decide', () => {
     assert.equal(d.entry, 100.7);
   });
 
-  it('waits when the 15m T3 is against the trade', () => {
+  it('15m T3 against + 1h T3 with the trade → pullback limit on the nearest EMA below price', () => {
     const a = up(); a['15m'].t3 = { bull: false, cross: 0 };
     const d = decide(a, Q);
-    assert.equal(d.action, 'wait');
-    assert.match(d.reasons.at(-1), /15m T3/);
+    assert.equal(d.action, 'trade');
+    assert.equal(d.type, 'limit');
+    assert.equal(d.entry, 98);  // 5m / 15m EMA20 are at the market (100), 15m EMA50 = 98 is the nearest below
+    assert.match(d.reasons.join(' | '), /pullback in progress, limit on the 15m EMA50/);
   });
 
-  it('waits on a fresh 5m T3 cross against the trade', () => {
+  it('15m T3 against and 1h T3 against → wait', () => {
+    const a = up(); a['15m'].t3 = { bull: false, cross: 0 }; a['1h'].t3 = { bull: false, cross: 0 };
+    const d = decide(a, Q);
+    assert.equal(d.action, 'wait');
+    assert.match(d.reasons.at(-1), /15m T3.*1h T3 against/);
+  });
+
+  it('t3_pullback_limit off keeps the old 15m T3 wait', () => {
+    const a = up(); a['15m'].t3 = { bull: false, cross: 0 };
+    assert.match(decide(a, { ...Q, t3_pullback_limit: false }).reasons.at(-1), /15m T3/);
+  });
+
+  it('fresh 5m T3 cross against a market entry → pullback limit (1h T3 with the trade)', () => {
     const a = up(); a['5m'].t3 = { bull: false, cross: -1, cross_bars_ago: 0 };
-    assert.match(decide(a, Q).reasons.at(-1), /5m T3 cross against/);
+    const d = decide(a, Q);
+    assert.equal(d.type, 'limit');
+    assert.match(d.reasons.join(' | '), /Fresh 5m T3 cross against/);
+  });
+
+  it('a pullback limit needs the 1h T3 with the trade even when the 15m T3 agrees', () => {
+    const a = up(); a['15m'] = tf({ extension: 2.1, ema20: 97.5, swing_highs: [112] }); a['1h'].t3 = { bull: false, cross: 0 };
+    const d = decide(a, Q);
+    assert.equal(d.action, 'wait');
+    assert.match(d.reasons.at(-1), /1h T3 .* against a long pullback limit/);
+  });
+
+  it('pullbackLimit picks the nearest EMA below a long / above a short', () => {
+    const a = up(); a['5m'].ema20 = 99.6; a['15m'].ema20 = 99.2; a['15m'].ema50 = 98;
+    assert.deepEqual(pullbackLimit(a, 1, 99.99, 100), { entry: 99.6, basis: '5m EMA20' });
+    a['5m'].ema20 = 100.5; a['15m'].ema20 = 100.8; a['15m'].ema50 = 101.4;
+    assert.deepEqual(pullbackLimit(a, -1, 99.99, 100), { entry: 100.5, basis: '5m EMA20' });
+    assert.equal(pullbackLimit(a, 1, 99.99, 100), null);
   });
 
   it('a fresh 5m T3 cross in the direction replaces the 1m momentum trigger', () => {

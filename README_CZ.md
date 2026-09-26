@@ -138,7 +138,12 @@ node src/cli/index.js order trail --watch 5
 ## 8. Jak autoorder rozhoduje
 
 1. **Směr:** vážený bias z 1D/1h/15m/5m/1m (váhy 0.30/0.30/0.20/0.15/0.05), podle trendu EMA 20/50/200 a struktury HH/HL. Musí platit |bias| ≥ `min_bias` a 1h i 15m musí souhlasit.
-2. **T3 filtr:** T3 FAST/SLOW na 15m musí souhlasit se směrem. Čerstvé křížení na 5m proti směru znamená WAIT. Čerstvé křížení ve směru na 5m nebo 1m slouží jako spouštěč.
+2. **T3 filtr podle typu objednávky:**
+   - **market a stop:** T3 FAST/SLOW na 15m musí souhlasit se směrem a na 5m nesmí být čerstvé křížení proti směru;
+   - **limit na pullback:** stačí, aby se směrem souhlasila T3 na 1h;
+   - když je T3 na 15m proti, ale na 1h ve směru (pullback právě probíhá), market nebo stop se změní na limit na nejbližší EMA pod cenou (5m EMA20, 15m EMA20 nebo 15m EMA50; u shortu nad cenou), volba `auto.t3_pullback_limit` (true);
+   - když je proti i T3 na 1h, výsledek je WAIT;
+   - čerstvé křížení ve směru na 5m nebo 1m slouží jako spouštěč.
 3. **Typ objednávky:**
    - **market:** pullback do hodnoty a spouštěč na 1m nebo z T3;
    - **limit:** přetažená cena, vstup na pullback k EMA20;

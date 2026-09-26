@@ -11,8 +11,10 @@
  *  - 5m compression pressing the range edge → stop entry on the breakout
  *  - pullback into value with a 1m momentum trigger → market, without trigger → stop above the trigger bar
  *  - structural stop behind the last 5m swing, must leave ≥ rr·R room to the next 1h/15m/daily level
- *  - T3 FAST/SLOW: 15m T3 must agree with the direction, no fresh 5m T3 cross against it;
- *    a fresh T3 cross in the trade direction on 5m/1m counts as a trigger
+ *  - T3 FAST/SLOW by order type: market / stop entries need the 15m T3 with the trade and no fresh 5m
+ *    T3 cross against it; a pullback limit only needs the 1h T3 with the trade. When the 15m T3 is against
+ *    but the 1h T3 agrees (pullback in progress) a market / stop plan becomes a limit on the nearest EMA
+ *    below price (t3_pullback_limit). A fresh T3 cross in the trade direction on 5m/1m counts as a trigger
  *  - buy low / sell high: longs only in the lower half (discount) of the 1h swing range, shorts only
  *    in the upper half (premium); breakout stop entries are exempt. TP sits just in front of the
  *    next opposing level (at least rr·R)
@@ -37,7 +39,7 @@ export const TIMEFRAMES = [
   { key: '1m', res: '1', sec: 60, weight: 0.05 },
 ];
 
-export const AUTO_DEFAULTS = { min_score: 65, min_bias: 0.35, bars: 400, zone_max: 0.5, tp_at_level: true };
+export const AUTO_DEFAULTS = { min_score: 65, min_bias: 0.35, bars: 400, zone_max: 0.5, tp_at_level: true, t3_pullback_limit: true };
 export const T3_DEFAULTS = { fast: 8, slow: 21, factor: 0.7 };
 
 // ── Indicators (closed bars) ────────────────────────────────────────────
@@ -159,7 +161,8 @@ export function analyzeTimeframe(rawBars, { pivot = 3, t3 = T3_DEFAULTS } = {}) 
  * Returns { action: 'trade' | 'wait', side, type, entry, sl, score, reasons, ... }.
  */
 export function decide(a, { bid, ask, min_tick, rr = 2, min_score = AUTO_DEFAULTS.min_score, min_bias = AUTO_DEFAULTS.min_bias,
-  cost_rate = 0.0004, min_sl_pct = 0.0015, max_cost_share = 0.3, zone_max = AUTO_DEFAULTS.zone_max, tp_at_level = AUTO_DEFAULTS.tp_at_level }) {
+  cost_rate = 0.0004, min_sl_pct = 0.0015, max_cost_share = 0.3, zone_max = AUTO_DEFAULTS.zone_max, tp_at_level = AUTO_DEFAULTS.tp_at_level,
+  t3_pullback_limit = AUTO_DEFAULTS.t3_pullback_limit }) {
   const reasons = [];
   const bias = TIMEFRAMES.reduce((s, tf) => s + tf.weight * a[tf.key].trend, 0);
   const base = { bias: Number(bias.toFixed(3)), trends: Object.fromEntries(TIMEFRAMES.map(tf => [tf.key, a[tf.key].trend])) };
@@ -174,9 +177,13 @@ export function decide(a, { bid, ask, min_tick, rr = 2, min_score = AUTO_DEFAULT
   reasons.push(`Top-down ${side} bias ${base.bias} (1D ${a['1d'].trend}, 1h ${a['1h'].trend}, 15m ${a['15m'].trend}, 5m ${a['5m'].trend})`);
 
   const m15 = a['15m'], m5 = a['5m'], m1 = a['1m'];
-  if (m15.t3 && m15.t3.bull !== (dir === 1)) return wait(`15m T3 FAST is ${m15.t3.bull ? 'above' : 'below'} T3 SLOW — against the ${side}`);
-  if (m5.t3 && m5.t3.cross === -dir) return wait(`Fresh 5m T3 cross against the ${side} (${m5.t3.cross_bars_ago} bars ago)`);
-  const t3Trigger = (m5.t3 && m5.t3.cross === dir) || (m1.t3 && m1.t3.cross === dir);
+  // T3 is gated per order type further below (after the order type is chosen)
+  const t3Against15 = !!(m15.t3 && m15.t3.bull !== (dir === 1));
+  const t3Cross5Against = !!(m5.t3 && m5.t3.cross === -dir);
+  const t3Aligned1h = !a['1h'].t3 || a['1h'].t3.bull === (dir === 1);
+  const t3Reason = t3Against15 ? `15m T3 FAST is ${m15.t3.bull ? 'above' : 'below'} T3 SLOW — against the ${side}`
+    : `Fresh 5m T3 cross against the ${side} (${m5.t3?.cross_bars_ago} bars ago)`;
+  const t3Trigger = !t3Against15 && ((m5.t3 && m5.t3.cross === dir) || (m1.t3 && m1.t3.cross === dir));
   const trending = (a['1h'].adx ?? 0) >= 20 || (m15.adx ?? 0) >= 22;
   const ext15 = m15.extension * dir;
   const exhausted = dir === 1 ? (m15.rsi > 70 || m5.rsi > 75) : (m15.rsi < 30 || m5.rsi < 25);
@@ -210,6 +217,18 @@ export function decide(a, { bid, ask, min_tick, rr = 2, min_score = AUTO_DEFAULT
   }
   if (type === 'limit' && (dir === 1 ? entry >= ask : entry <= bid)) { type = 'market'; entry = market; why += ' (level already reached → market)'; }
   if (type === 'stop' && (dir === 1 ? entry <= ask : entry >= bid)) { type = 'market'; entry = market; why += ' (trigger already crossed → market)'; }
+
+  // T3 gate by order type. Market / stop entries need the 15m T3 with the trade and no fresh 5m cross against it.
+  // A pullback limit waits for price to come to value, so it only needs the 1h T3 with the trade — this is what
+  // lets the playbook buy the pullback while the 15m T3 is still pointing into it.
+  if (type !== 'limit' && (t3Against15 || t3Cross5Against)) {
+    const pull = t3_pullback_limit && t3Aligned1h ? pullbackLimit(a, dir, bid, ask) : null;
+    if (!pull) return wait(t3Aligned1h ? t3Reason : `${t3Reason}; 1h T3 against as well`);
+    type = 'limit'; entry = pull.entry; slRaw = null; slBasis = null;
+    why = `${t3Reason}, but the 1h T3 is with the ${side} — pullback in progress, limit on the ${pull.basis}`;
+  }
+  if (type === 'limit' && !t3Aligned1h) return wait(`1h T3 FAST is ${a['1h'].t3.bull ? 'above' : 'below'} T3 SLOW — against a ${side} pullback limit`);
+
   if (type !== 'market') entry = roundToStep(entry, min_tick, (dir === 1) === (type === 'limit') ? 'floor' : 'ceil');
   reasons.push(why);
 
@@ -219,7 +238,9 @@ export function decide(a, { bid, ask, min_tick, rr = 2, min_score = AUTO_DEFAULT
   reasons.push(nearest == null ? 'No opposing level in range (open space)' : `${roomR.toFixed(2)}R of room to the next level ${nearest}`);
   if (fin.zone) reasons.push(`Entry at ${(fin.zone.position * 100).toFixed(0)} % of the 1h range ${fin.zone.low}–${fin.zone.high}${type === 'stop' ? ' (breakout — zone rule exempt)' : ''}; TP ${plan.tp} (${plan.tp_basis})`);
 
-  const t3Pts = (m15.t3 && m15.t3.bull === (dir === 1) ? 4 : 0) + (m5.t3 && m5.t3.bull === (dir === 1) ? 3 : 0) + (t3Trigger ? 3 : 0);
+  // T3 points follow the gate: the 1h T3 for a limit, the 15m T3 for market / stop entries
+  const t3Pts = (type === 'limit' ? (t3Aligned1h ? 4 : 0) : (m15.t3 && m15.t3.bull === (dir === 1) ? 4 : 0))
+    + (m5.t3 && m5.t3.bull === (dir === 1) ? 3 : 0) + (t3Trigger ? 3 : 0);
   const sc = {
     bias: Math.round(30 * Math.min(1, Math.abs(bias))),
     regime: trending ? 10 : 3,
@@ -233,6 +254,18 @@ export function decide(a, { bid, ask, min_tick, rr = 2, min_score = AUTO_DEFAULT
   const extra = { plan, score, score_breakdown: sc, trending, nearest_level: nearest, room_r: Number.isFinite(roomR) ? Number(roomR.toFixed(2)) : null };
   if (score < min_score) return wait(`Confluence score ${score} < ${min_score}`, extra);
   return { ...base, action: 'trade', ...plan, reasons, ...extra };
+}
+
+/**
+ * Limit entry for a pullback that is still running: the nearest of 5m EMA20, 15m EMA20 and 15m EMA50
+ * below the market for a long (above it for a short). Returns { entry, basis } or null.
+ */
+export function pullbackLimit(a, dir, bid, ask) {
+  const cands = [[a['5m'].ema20, '5m EMA20'], [a['15m'].ema20, '15m EMA20'], [a['15m'].ema50, '15m EMA50']]
+    .filter(([p]) => p != null && (dir === 1 ? p < ask : p > bid));
+  if (!cands.length) return null;
+  const [entry, basis] = cands.sort((x, y) => (dir === 1 ? y[0] - x[0] : x[0] - y[0]))[0];
+  return { entry, basis };
 }
 
 /**
@@ -350,7 +383,7 @@ export async function autoOrder({ symbol, dry_run = false, risk_usdt, min_score,
   const auto = { ...AUTO_DEFAULTS, ...(cfg.auto || {}) };
   const opts = { min_score: min_score ?? auto.min_score, min_bias: min_bias ?? auto.min_bias, rr: cfg.rr,
     cost_rate: cfg.fee_rate + cfg.slippage_rate, min_sl_pct: cfg.min_sl_pct, max_cost_share: cfg.max_cost_share,
-    zone_max: auto.zone_max, tp_at_level: auto.tp_at_level };
+    zone_max: auto.zone_max, tp_at_level: auto.tp_at_level, t3_pullback_limit: auto.t3_pullback_limit };
 
   const original = await chartState();
   const bare = symbol.includes(':') ? symbol.toUpperCase() : ':' + symbol.toUpperCase();
