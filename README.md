@@ -9,7 +9,7 @@ Orders go to the broker connected in TradingView's Trading Panel (**Paper Tradin
 | Tool | CLI | What it does |
 |---|---|---|
 | `order_place` | `tv order place sell` | Market/limit/stop order. Only `side` is required: qty is sized from `risk_usdt` (incl. fees + slippage), SL = last confirmed swing ± `sl_atr_mult`×ATR, TP = `rr`×R. Everything can be overridden; `dry_run` computes only. |
-| `positions_trail` | `tv order trail [--watch 5]` | Finds **all** open positions and tightens the SL of every one in profit. The original stop is left alone until the trade is +`activate_r`·R (default 1R); then the stop goes at least to break-even incl. fees and an ATR trail (5m ATR from Bybit) follows the price, with min gap and min step. With `trailing.t3_exit` it also **closes** a position (in profit or not) when T3 FAST crosses T3 SLOW against it on the last closed 5m bar. Never loosens a stop, never touches TP. `--watch N` repeats every N seconds. |
+| `positions_trail` | `tv order trail [--watch 5]` | Finds **all** open positions and tightens the SL of every one in profit. Every tick it also **cancels pending entries whose setup is gone**: price traded through the order's own SL before it filled, or it did not fill within `trailing.pending_ttl_min` (60 min). The original stop is left alone until the trade is +`activate_r`·R (default 0.75R); then the stop goes at least to break-even incl. fees and an ATR trail (5m ATR from Bybit) follows the price, with min gap and min step. With `trailing.t3_exit` it also **closes** a position (in profit or not) when T3 FAST crosses T3 SLOW against it on the last closed 5m bar. Never loosens a stop, never touches TP. `--watch N` repeats every N seconds. |
 | `autoorder` | `tv order auto BYBIT:BTCUSDT.P [--dry-run]` | Give it a ticker: it reads 1D/1h/15m/5m/1m (EMA 20/50/200 trend, HH/HL structure, RSI, ADX, ATR extension, compression, volume, levels), decides top-down whether to trade and which order type — **market** on a pullback with a 1m trigger, **limit** on the 15m EMA20 when price is extended, **stop** on a 5m compression breakout or above the trigger bars — sets a structural SL behind the last 5m swing, requires ≥ rr·R room to the next 1h/15m/daily level and a confluence score ≥ `min_score`, then executes via `order_place`. **Tillson T3 FAST/SLOW** (default 8/21, v 0.7) gates entries by order type: market / stop entries need the 15m T3 with the trade and no fresh 5m T3 cross against it; a pullback limit only needs the 1h T3 with the trade. When the 15m T3 points into a pullback but the 1h T3 agrees, the plan becomes a limit on the nearest EMA below price (`auto.t3_pullback_limit`). A fresh 5m/1m T3 cross in the direction counts as the entry trigger (up to 10 score points). Default is WAIT. Stops tighter than `min_sl_pct` (0.15 %) or where fees + slippage exceed `max_cost_share` (30 %) of the risk are refused (flat / weekend markets). The chart view is reset (Alt+R) after every symbol/timeframe switch and a symbol switch is retried if TradingView jumps elsewhere. Takes a 5m screenshot after the decision. |
 | `order_status` | `tv order status` | Account summary, positions, working orders, active config |
 | `position_set_brackets` | `tv order brackets --sl X --tp Y` | Move SL/TP of an open position |
@@ -25,7 +25,7 @@ Orders go to the broker connected in TradingView's Trading Panel (**Paper Tradin
   "fee_rate": 0.0002, "slippage_rate": 0.0002, "allow_live": false,
   "leverage": { "enabled": true, "min": 10, "max": 50, "vol_mult": 3, "sl_mult": 2, "maintenance_margin": 0.005 },
   "t3": { "fast": 8, "slow": 21, "factor": 0.7 },
-  "trailing": { "activate_r": 1, "t3_exit": true, "trail_atr_mult": 1.0, "min_gap_atr": 0.25, "min_step_atr": 0.1, "breakeven": true, "switch_chart": true, "bars_source": "bybit", "atr_timeframe": "5" },
+  "trailing": { "activate_r": 0.75, "guard_pending": true, "pending_ttl_min": 60, "t3_exit": true, "trail_atr_mult": 1.0, "min_gap_atr": 0.25, "min_step_atr": 0.1, "breakeven": true, "switch_chart": true, "bars_source": "bybit", "atr_timeframe": "5" },
   "auto": { "min_score": 65, "min_bias": 0.35, "bars": 400 }
 }
 ```
@@ -109,7 +109,8 @@ Edit `trading.json` (repo root) or `~/.tradingview-mcp/trading.json` (overrides)
 | `rr` | 2 | TP = rr × SL distance |
 | `min_sl_pct` / `max_cost_share` | 0.15 % / 30 % | Refuse noise-tight stops |
 | `leverage.min` / `max` | 10 / 50 | Volatility-based leverage range |
-| `trailing.activate_r` | 1 | Trail starts at +1R (break-even first) |
+| `trailing.activate_r` | 0.75 | Trail starts at +0.75R (break-even first) |
+| `trailing.guard_pending` / `pending_ttl_min` | true / 60 | Cancel pending entries when price trades through their SL, or after 60 min unfilled |
 | `trailing.t3_exit` | true | Close position on a 5m T3 cross against it |
 | `t3` | 8 / 21 / 0.7 | T3 FAST / SLOW / volume factor |
 | `auto.min_score` / `min_bias` | 65 / 0.35 | autoorder strictness |
@@ -169,7 +170,7 @@ node src/cli/index.js order cancel
 3. Order type: **market** (pullback into value + 1m or T3 trigger), **limit** (extended → EMA20 pullback), **stop** (5m compression breakout / above trigger bars).
 4. Structural SL behind the 5m swing (± 0.5 ATR); refused if too wide (> 3 ATR 15m) or too tight (`min_sl_pct`, `max_cost_share`).
 5. Needs ≥ rr·R room to the next 1h/15m/daily level and a confluence score ≥ `min_score`.
-6. **Buy low, sell high:** a long enters only in the lower half (discount) of the 1h swing range (last swing low → last swing high), a short only in the upper half (premium) — `auto.zone_max` (0.5). Breakout stop entries are exempt. The TP sits just in front of the next opposing level (never closer than rr·R) — `auto.tp_at_level` (true); off = fixed rr·R.
+6. **Buy low, sell high:** a long enters only in the lower half (discount) of the 1h swing range (last swing low → last swing high), a short only in the upper half (premium) — `auto.zone_max` (0.5). Only a 5m compression breakout (stop) is exempt — a stop above the 1m trigger bars is not. The TP sits just in front of the next opposing level (never closer than rr·R) — `auto.tp_at_level` (true); off = fixed rr·R.
 7. Sends via `order_place` (money management, leverage 10–50× from 1h volatility, verification, audit log).
 
 ### Pine indicator with T3 (optional)

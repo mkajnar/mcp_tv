@@ -16,7 +16,7 @@
  *    but the 1h T3 agrees (pullback in progress) a market / stop plan becomes a limit on the nearest EMA
  *    below price (t3_pullback_limit). A fresh T3 cross in the trade direction on 5m/1m counts as a trigger
  *  - buy low / sell high: longs only in the lower half (discount) of the 1h swing range, shorts only
- *    in the upper half (premium); breakout stop entries are exempt. TP sits just in front of the
+ *    in the upper half (premium); only a 5m compression breakout (stop) is exempt. TP sits just in front of the
  *    next opposing level (at least rr·R)
  *  - confluence score (0–100) must reach min_score
  */
@@ -194,13 +194,13 @@ export function decide(a, { bid, ask, min_tick, rr = 2, min_score = AUTO_DEFAULT
   const nearEdge = rangeSize > 0 && (dir === 1 ? (m5.close - m5.range.low) / rangeSize >= 0.7 : (m5.range.high - m5.close) / rangeSize >= 0.7);
   const market = dir === 1 ? ask : bid;
 
-  let type, entry, why, slRaw = null, slBasis = null;
+  let type, entry, why, slRaw = null, slBasis = null, breakout = false;
   if (ext15 > 1.5 || exhausted) {
     type = 'limit'; entry = m15.ema20;
     why = `Extended ${ext15.toFixed(2)} ATR from 15m EMA20${exhausted ? ' with stretched RSI' : ''} — no chase, limit on the 15m EMA20 pullback`;
   } else if (m5.compressed && nearEdge) {
     type = 'stop'; entry = (dir === 1 ? m5.range.high : m5.range.low) + dir * 0.1 * m5.atr;
-    slRaw = (dir === 1 ? m5.range.low : m5.range.high) - dir * 0.25 * m5.atr; slBasis = '5m range edge';
+    slRaw = (dir === 1 ? m5.range.low : m5.range.high) - dir * 0.25 * m5.atr; slBasis = '5m range edge'; breakout = true;
     why = `5m compression (${m5.range.size_atr.toFixed(1)} ATR) pressing the range ${dir === 1 ? 'high' : 'low'} — stop entry on the breakout`;
   } else if (Math.abs(m15.extension) <= 0.75 || Math.abs(m5.extension) <= 0.5) {
     if (mom1) {
@@ -232,11 +232,11 @@ export function decide(a, { bid, ask, min_tick, rr = 2, min_score = AUTO_DEFAULT
   if (type !== 'market') entry = roundToStep(entry, min_tick, (dir === 1) === (type === 'limit') ? 'floor' : 'ceil');
   reasons.push(why);
 
-  const fin = finishPlan(a, { dir, type, entry, slRaw, slBasis, bid, ask, min_tick, rr, cost_rate, min_sl_pct, max_cost_share, zone_max, tp_at_level });
+  const fin = finishPlan(a, { dir, type, entry, slRaw, slBasis, breakout, bid, ask, min_tick, rr, cost_rate, min_sl_pct, max_cost_share, zone_max, tp_at_level });
   if (!fin.ok) return wait(fin.why, { plan: fin.plan });
   const { plan, nearest, roomR } = fin;
   reasons.push(nearest == null ? 'No opposing level in range (open space)' : `${roomR.toFixed(2)}R of room to the next level ${nearest}`);
-  if (fin.zone) reasons.push(`Entry at ${(fin.zone.position * 100).toFixed(0)} % of the 1h range ${fin.zone.low}–${fin.zone.high}${type === 'stop' ? ' (breakout — zone rule exempt)' : ''}; TP ${plan.tp} (${plan.tp_basis})`);
+  if (fin.zone) reasons.push(`Entry at ${(fin.zone.position * 100).toFixed(0)} % of the 1h range ${fin.zone.low}–${fin.zone.high}${breakout && type === 'stop' ? ' (5m compression breakout — zone rule exempt)' : ''}; TP ${plan.tp} (${plan.tp_basis})`);
 
   // T3 points follow the gate: the 1h T3 for a limit, the 15m T3 for market / stop entries
   const t3Pts = (type === 'limit' ? (t3Aligned1h ? 4 : 0) : (m15.t3 && m15.t3.bull === (dir === 1) ? 4 : 0))
@@ -272,7 +272,7 @@ export function pullbackLimit(a, dir, bid, ask) {
  * Shared tail of every plan: structural SL, stop width / cost guards and room to the next level.
  * Returns { ok, plan, nearest, roomR } or { ok: false, why, plan }.
  */
-export function finishPlan(a, { dir, type, entry, slRaw = null, slBasis = null, bid, ask, min_tick, rr = 2, cost_rate = 0.0004, min_sl_pct = 0.0015, max_cost_share = 0.3,
+export function finishPlan(a, { dir, type, entry, slRaw = null, slBasis = null, breakout = false, bid, ask, min_tick, rr = 2, cost_rate = 0.0004, min_sl_pct = 0.0015, max_cost_share = 0.3,
   zone_max = AUTO_DEFAULTS.zone_max, tp_at_level = AUTO_DEFAULTS.tp_at_level }) {
   const m15 = a['15m'], m5 = a['5m'];
   const side = dir === 1 ? 'long' : 'short';
@@ -301,9 +301,10 @@ export function finishPlan(a, { dir, type, entry, slRaw = null, slBasis = null, 
   if (roomR < rr) return { ok: false, plan, why: `Only ${roomR.toFixed(2)}R of room to the next ${dir === 1 ? 'resistance' : 'support'} ${nearest} — need ${rr}R` };
 
   // Buy low, sell high: a long enters in the discount (lower part) of the 1h swing range, a short in the premium.
-  // A breakout stop entry is a momentum setup and is exempt.
+  // Only a real 5m compression breakout (stop order) is exempt — a stop above the 1m trigger bars is not
+  // (WLD 26.9.: a trigger-bar buy stop at 71 % of the range was waved through as a "breakout" and lost 1R).
   const zone = rangeZone(a['1h'], entry);
-  if (zone && zone_max != null && type !== 'stop') {
+  if (zone && zone_max != null && !(breakout && type === 'stop')) {
     const inZone = dir === 1 ? zone.position <= zone_max : zone.position >= 1 - zone_max;
     if (!inZone) return { ok: false, plan, zone, why: `Buy low / sell high: entry at ${(zone.position * 100).toFixed(0)} % of the 1h range ${zone.low}–${zone.high}` +
       ` — a ${side} needs ${dir === 1 ? `≤ ${Math.round(zone_max * 100)} % (discount)` : `≥ ${Math.round((1 - zone_max) * 100)} % (premium)`}` };

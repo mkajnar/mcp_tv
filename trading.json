@@ -24,7 +24,9 @@
     "maintenance_margin": 0.005
   },
   "trailing": {
-    "activate_r": 1,
+    "activate_r": 0.75,
+    "guard_pending": true,
+    "pending_ttl_min": 60,
     "t3_exit": true,
     "trail_atr_mult": 1.0,
     "min_gap_atr": 0.25,

@@ -6,7 +6,7 @@
  */
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { planOrder, computeSwingAtr, computeTrailStop, computeLeverage, stopTooTight, roundToStep, parseSide } from '../src/core/trading.js';
+import { planOrder, computeSwingAtr, computeTrailStop, computeLeverage, stopTooTight, pendingVerdict, roundToStep, parseSide } from '../src/core/trading.js';
 
 const MM = { fee_rate: 0.0002, slippage_rate: 0.0002, rr: 2, risk_usdt: 100 };
 
@@ -182,6 +182,35 @@ describe('stopTooTight', () => {
   });
   it('accepts a normal 1 % stop', () => {
     assert.equal(stopTooTight({ entry: 100, dist: 1, cost_per_unit: 0.08 }), null);
+  });
+});
+
+describe('pendingVerdict (pending entry guard)', () => {
+  it('WLD 26.9.: buy stop 0.5298, SL 0.5245, price fell to 0.515 → cancel', () => {
+    assert.match(pendingVerdict({ side: 1, sl: 0.5245, price: 0.5153 }), /through the stop loss/);
+    assert.match(pendingVerdict({ side: 1, sl: 0.5245, price: 0.5283, extreme: 0.515 }), /traded through the stop loss 0.5245 \(low 0.515\)/);
+  });
+  it('sell entry: price above its SL → cancel', () => {
+    assert.match(pendingVerdict({ side: -1, sl: 101, price: 101.2 }), /through the stop loss/);
+  });
+  it('healthy pending order stays', () => {
+    assert.equal(pendingVerdict({ side: 1, sl: 0.5245, price: 0.5283, extreme: 0.5260, age_min: 10, ttl_min: 60 }), null);
+  });
+  it('expires after the TTL, never with ttl 0', () => {
+    assert.match(pendingVerdict({ side: 1, sl: 1, price: 2, age_min: 61, ttl_min: 60 }), /not filled within 60 min/);
+    assert.equal(pendingVerdict({ side: 1, sl: 1, price: 2, age_min: 600, ttl_min: 0 }), null);
+  });
+});
+
+describe('activate_r 0.75 (WLD 26.9. replay)', () => {
+  const T = { trail_atr_mult: 1, min_gap_atr: 0.25, fee_rate: 0.0002, breakeven: true };
+  it('+0.76R moves the stop to at least break-even with activate_r 0.75', () => {
+    const r = computeTrailStop({ ...T, activate_r: 0.75, side: 1, entry: 0.53, price: 0.5342, current_sl: 0.5245, atr: 0.0015, min_tick: 0.0001 });
+    assert.equal(r.action, 'move');
+    assert.ok(r.new_sl >= 0.53 * (1 + 2 * 0.0002) - 1e-9);
+  });
+  it('the same move did nothing with activate_r 1', () => {
+    assert.notEqual(computeTrailStop({ ...T, activate_r: 1, side: 1, entry: 0.53, price: 0.5342, current_sl: 0.5245, atr: 0.0015, min_tick: 0.0001 }).action, 'move');
   });
 });
 

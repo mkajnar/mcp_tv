@@ -45,7 +45,9 @@ export const DEFAULT_CONFIG = {
     maintenance_margin: 0.005,
   },
   trailing: {
-    activate_r: 1,         // leave the original stop alone until the trade is +activate_r·R, then at least break-even
+    activate_r: 0.75,      // leave the original stop alone until the trade is +activate_r·R, then at least break-even
+    guard_pending: true,   // cancel pending entries whose setup got invalidated (price through their SL) …
+    pending_ttl_min: 60,   // … or that did not fill within this many minutes (0 = no expiry)
     t3_exit: true,         // close the position when T3 FAST crosses T3 SLOW against it on the last closed bar (atr_timeframe)
     trail_atr_mult: 1.0,   // ATR trail: SL = price ± trail_atr_mult * ATR
     min_gap_atr: 0.25,     // SL never closer to price than min_gap_atr * ATR
@@ -299,7 +301,7 @@ const MAP_POSITION = `function(p) { return { id: p.id, symbol: p.symbol, side: p
   used_margin: p.extra && p.extra.usedMargin }; }`;
 const MAP_ORDER = `function(o) { var types = {1: 'limit', 2: 'market', 3: 'stop', 4: 'stop_limit'}; return { id: o.id, symbol: o.symbol,
   side: o.side === -1 ? 'sell' : 'buy', type: types[o.type] || o.type, qty: o.qty, limit_price: o.limitPrice, stop_price: o.stopPrice,
-  bracket_of: o.parentId || null, stop_loss: o.stopLoss, take_profit: o.takeProfit }; }`;
+  bracket_of: o.parentId || null, stop_loss: o.stopLoss, take_profit: o.takeProfit, placed_at: (o.extra && o.extra.placingTime) || null }; }`;
 
 const ACCOUNT_JS = `
   var meta = {}; try { meta = b.metainfo() || {}; } catch (e) {}
@@ -570,6 +572,68 @@ export async function setBrackets({ symbol, sl, tp } = {}) {
 }
 
 /**
+ * Should a pending entry be cancelled? side 1 = buy, -1 = sell. `extreme` is the lowest low (buy) /
+ * highest high (sell) since the order was placed. Returns the reason or null.
+ */
+export function pendingVerdict({ side, sl, price = null, extreme = null, age_min = null, ttl_min = 0 }) {
+  if (sl != null) {
+    if (price != null && (side === 1 ? price <= sl : price >= sl)) return `price ${price} is through the stop loss ${sl} — setup invalidated before the entry filled`;
+    if (extreme != null && (side === 1 ? extreme <= sl : extreme >= sl)) return `price traded through the stop loss ${sl} (${side === 1 ? 'low' : 'high'} ${extreme}) since the order was placed — setup invalidated`;
+  }
+  if (ttl_min > 0 && age_min != null && age_min > ttl_min) return `not filled within ${ttl_min} min (age ${Math.round(age_min)} min) — setup expired`;
+  return null;
+}
+
+// 1m bars since placement are re-read at most once a minute per order (the live quote is checked every tick)
+const pendingBarsCheck = new Map();
+
+/**
+ * Cancel pending entries (non-bracket working orders) whose setup is gone: price traded through the
+ * order's own stop loss before it filled (live quote + Bybit 1m lows/highs since placement), or the
+ * order is older than trailing.pending_ttl_min. WLD 26.9.: a buy stop stayed live after price fell
+ * 1 % below its SL, filled 1.5 h later in a different market and lost 1R.
+ */
+export async function guardPendingEntries({ dry_run = false } = {}) {
+  const cfg = loadConfig();
+  const ttl = cfg.trailing.pending_ttl_min ?? 0;
+  const ctx = await brokerEval(`
+    ${ACCOUNT_JS}
+    var working = (await b.orders()).filter(function(o) { return o.status === ${ORDER_STATUS_WORKING} && !o.parentId; }).map(${MAP_ORDER});
+    return { account: account, working: working };
+  `, 20000);
+  assertAccountAllowed(ctx.account, cfg);
+  const results = [];
+  for (const o of ctx.working) {
+    const side = o.side === 'sell' ? -1 : 1;
+    const ageMin = o.placed_at ? (Date.now() - o.placed_at) / 60000 : null;
+    let price = null, extreme = null;
+    if (o.stop_loss != null) {
+      const q = await bybitQuote(o.symbol).catch(() => null);
+      if (q) price = side === 1 ? q.bid : q.ask;
+      const last = pendingBarsCheck.get(o.id) || 0;
+      if (o.placed_at && Date.now() - last >= 60000) {
+        pendingBarsCheck.set(o.id, Date.now());
+        const bars = await bybitBars(o.symbol, '1', Math.min(1000, Math.ceil(ageMin) + 2)).catch(() => null);
+        // only bars that started after the placement minute (a wick just before the order does not count)
+        const since = (bars || []).filter(b => b.time * 1000 >= Math.floor(o.placed_at / 60000) * 60000 + 60000);
+        if (since.length) extreme = side === 1 ? Math.min(...since.map(b => b.low)) : Math.max(...since.map(b => b.high));
+      }
+    }
+    const reason = pendingVerdict({ side, sl: o.stop_loss, price, extreme, age_min: ageMin, ttl_min: ttl });
+    if (!reason) continue;
+    const row = { symbol: o.symbol, action: 'cancel_pending', order_id: o.id, type: o.type, side: o.side,
+      entry: o.limit_price ?? o.stop_price, current_sl: o.stop_loss ?? null, price, reason };
+    if (!dry_run) {
+      try { const r = await cancelOrders({ symbol: o.symbol, order_id: o.id }); row.applied = !!r.success; pendingBarsCheck.delete(o.id); }
+      catch (err) { row.applied = false; row.error = err.message; }
+    }
+    logEvent({ event: dry_run ? 'pending_cancel_dry_run' : 'pending_cancel', ...row });
+    results.push(row);
+  }
+  return results;
+}
+
+/**
  * Tighten the stop of every open position that is in profit (or only `symbol`).
  * Bars for ATR come from the active chart; positions on other symbols are read by
  * temporarily switching the chart (restored afterwards) unless switch_chart is false.
@@ -587,6 +651,12 @@ export async function trailStops({ symbol, dry_run = false, trail_atr_mult, min_
     bars_source: bars_source ?? cfg.trailing.bars_source,
     atr_timeframe: cfg.trailing.atr_timeframe,
   };
+  // Pending entries first: cancel the ones whose setup is gone (all symbols, only when trailing everything)
+  let pending = [];
+  if (!symbol && cfg.trailing.guard_pending !== false) {
+    try { pending = await guardPendingEntries({ dry_run }); }
+    catch (err) { pending = [{ action: 'error', reason: `pending guard: ${err.message}`, error: err.message }]; }
+  }
   const ctx = await brokerEval(`
     ${ACCOUNT_JS}
     var chartSymbol = null; try { chartSymbol = window.TradingViewApi._activeChartWidgetWV.value().symbol(); } catch (e) {}
@@ -601,9 +671,9 @@ export async function trailStops({ symbol, dry_run = false, trail_atr_mult, min_
     return { account: account, chart_symbol: chartSymbol, positions: positions };
   `, 20000);
   assertAccountAllowed(ctx.account, cfg);
-  if (!ctx.positions.length) return { success: true, dry_run, message: 'No open positions', results: [] };
+  if (!ctx.positions.length) return { success: true, dry_run, message: 'No open positions', results: pending };
 
-  const results = [];
+  const results = [...pending];
   let switched = false;
   try {
     for (const pos of ctx.positions) {

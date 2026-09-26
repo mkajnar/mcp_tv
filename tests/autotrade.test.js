@@ -219,12 +219,22 @@ describe('decide', () => {
     assert.match(d.reasons.at(-1), /premium/);
   });
 
-  it('a breakout stop entry is exempt from the zone rule', () => {
+  it('a stop above the 1m trigger bars is NOT exempt from the zone rule (WLD 26.9.)', () => {
     const a = up(); a['1h'].swing_highs = [95, 99.5]; a['1h'].swing_lows = [90, 94];
     a['1m'] = tf({ rsi: 40, rsi_prev: 44, last_bar: { high: 100.4, low: 99.8, close: 99.9 }, prev_bar: { high: 100.6, low: 99.9, close: 100.1 } });
     const d = decide(a, Q);
+    assert.equal(d.action, 'wait');
+    assert.match(d.reasons.at(-1), /Buy low \/ sell high/);
+  });
+
+  it('a 5m compression breakout stop is exempt from the zone rule', () => {
+    const a = up(); a['1h'].swing_highs = [95, 99.5]; a['1h'].swing_lows = [90, 94];
+    a['5m'] = tf({ compressed: true, close: 101.6, range: { high: 102, low: 100, size_atr: 2 }, extension: 1.2, rel_vol: 1.5 });
+    a['15m'] = tf({ extension: 1.0, swing_highs: [112] });
+    const d = decide(a, Q);
     assert.equal(d.action, 'trade');
     assert.equal(d.type, 'stop');
+    assert.match(d.reasons.join(' | '), /compression breakout — zone rule exempt/);
   });
 
   it('TP sits just in front of the next resistance', () => {
