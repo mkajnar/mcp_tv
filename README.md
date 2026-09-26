@@ -171,6 +171,10 @@ node src/cli/index.js order cancel
 5. Needs ≥ rr·R room to the next 1h/15m/daily level and a confluence score ≥ `min_score`.
 6. Sends via `order_place` (money management, leverage 10–50× from 1h volatility, verification, audit log).
 
+### Pine indicator with T3 (optional)
+
+[`pine/milan_macd_rsi_swings.pine`](pine/milan_macd_rsi_swings.pine) — "MKA Multi" (RSI, MACD, swings, T3 FAST/SLOW with T3 L / T3 S / exit signals and alerts, same T3 settings as autoorder). Load it via the AI: *"open the Pine editor, set this source and compile"* (`pine_set_source`, `pine_smart_compile`) or paste it into TradingView's Pine Editor.
+
 ### 9. Logs and troubleshooting
 
 - Audit log: `~/.tradingview-mcp/orders/YYYY-MM-DD.jsonl` (decisions, intents, fills, trail moves).

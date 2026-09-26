@@ -1,0 +1,142 @@
+//@version=6
+indicator("Milan - RSI MACD Swings", shorttitle="MKA Multi", overlay=false, max_labels_count=300)
+
+// One indicator slot. RSI owns this pane; price elements use force_overlay.
+// MACD is reported in quote-price units, never mixed with the RSI axis.
+rsiLen = input.int(14, "RSI length", minval=2, group="RSI")
+rsiUpper = input.float(70, "Upper level", minval=50, maxval=100, group="RSI")
+rsiLower = input.float(30, "Lower level", minval=0, maxval=50, group="RSI")
+macdFast = input.int(12, "Fast EMA", minval=1, group="MACD")
+macdSlow = input.int(26, "Slow EMA", minval=2, group="MACD")
+macdSignal = input.int(9, "Signal EMA", minval=1, group="MACD")
+showSwings = input.bool(true, "Show confirmed swings", group="Swings")
+leftBars = input.int(3, "Left bars", minval=1, maxval=50, group="Swings")
+rightBars = input.int(3, "Right bars (confirmation delay)", minval=1, maxval=50, group="Swings")
+backdate = input.bool(false, "Place labels on original pivot (historical annotation)", tooltip="Labels still become available only after Right bars have closed. This moves them into the past; it does NOT make them earlier signals.", group="Swings")
+showEma = input.bool(true, "Show price EMAs", group="Trend")
+emaFastLen = input.int(50, "Fast EMA length", minval=1, group="Trend")
+emaSlowLen = input.int(200, "Slow EMA length", minval=2, group="Trend")
+showTable = input.bool(true, "Show dashboard", group="Dashboard")
+atrLen = input.int(14, "ATR length", minval=1, group="Dashboard")
+volLen = input.int(20, "Relative volume baseline", minval=1, group="Dashboard")
+showT3 = input.bool(true, "Show T3 FAST / T3 SLOW", group="T3")
+t3FastLen = input.int(8, "T3 FAST length", minval=1, group="T3")
+t3SlowLen = input.int(21, "T3 SLOW length", minval=2, group="T3")
+t3Factor = input.float(0.7, "T3 volume factor", minval=0.0, maxval=1.0, step=0.05, group="T3")
+showT3Signals = input.bool(true, "Show T3 entry / exit signals", group="T3")
+t3TrendFilter = input.bool(false, "Entries only with EMA trend (fast EMA vs slow EMA)", tooltip="Long entries only when the fast EMA is above the slow EMA, short entries only below. Exits are never filtered.", group="T3")
+
+num(float value) => na(value) ? "n/a" : str.tostring(value, "#.##")
+price(float value) => na(value) ? "n/a" : str.tostring(value, format.mintick)
+
+// Tillson T3: six chained EMAs combined with the volume factor v.
+t3(float src, simple int len, float v) =>
+    e1 = ta.ema(src, len)
+    e2 = ta.ema(e1, len)
+    e3 = ta.ema(e2, len)
+    e4 = ta.ema(e3, len)
+    e5 = ta.ema(e4, len)
+    e6 = ta.ema(e5, len)
+    c1 = -v * v * v
+    c2 = 3 * v * v + 3 * v * v * v
+    c3 = -6 * v * v - 3 * v - 3 * v * v * v
+    c4 = 1 + 3 * v + v * v * v + 3 * v * v
+    c1 * e6 + c2 * e5 + c3 * e4 + c4 * e3
+
+rsi = ta.rsi(close, rsiLen)
+[macd, signal, hist] = ta.macd(close, macdFast, macdSlow, macdSignal)
+emaFast = ta.ema(close, emaFastLen)
+emaSlow = ta.ema(close, emaSlowLen)
+atr = ta.atr(atrLen)
+avgVolume = ta.sma(volume, volLen)
+relVolume = not na(avgVolume) and avgVolume > 0 ? volume / avgVolume : na
+atrPct = close != 0 ? 100 * atr / close : na
+t3Fast = t3(close, t3FastLen, t3Factor)
+t3Slow = t3(close, t3SlowLen, t3Factor)
+t3CrossUp = ta.crossover(t3Fast, t3Slow)
+t3CrossDown = ta.crossunder(t3Fast, t3Slow)
+t3BarsSinceCross = ta.barssince(t3CrossUp or t3CrossDown)
+// Signals only on closed bars, so they never repaint.
+t3LongEntry = barstate.isconfirmed and t3CrossUp and (not t3TrendFilter or emaFast > emaSlow)
+t3ShortEntry = barstate.isconfirmed and t3CrossDown and (not t3TrendFilter or emaFast < emaSlow)
+t3LongExit = barstate.isconfirmed and t3CrossDown
+t3ShortExit = barstate.isconfirmed and t3CrossUp
+ph = ta.pivothigh(high, leftBars, rightBars)
+pl = ta.pivotlow(low, leftBars, rightBars)
+newHigh = barstate.isconfirmed and not na(ph)
+newLow = barstate.isconfirmed and not na(pl)
+var float lastHigh = na
+var float lastLow = na
+var string highClass = "-"
+var string lowClass = "-"
+
+if newHigh
+    highClass := na(lastHigh) ? "H" : ph > lastHigh ? "HH" : ph < lastHigh ? "LH" : "EH"
+    lastHigh := ph
+    if showSwings
+        label.new(backdate ? bar_index - rightBars : bar_index, ph, highClass, style=label.style_label_down, color=color.new(color.red, 15), textcolor=color.white, size=size.tiny, tooltip="Swing high: " + price(ph) + "\nConfirmed after " + str.tostring(rightBars) + " closed bars.\n" + (backdate ? "Backdated to pivot bar." : "Shown on confirmation bar."), force_overlay=true)
+if newLow
+    lowClass := na(lastLow) ? "L" : pl > lastLow ? "HL" : pl < lastLow ? "LL" : "EL"
+    lastLow := pl
+    if showSwings
+        label.new(backdate ? bar_index - rightBars : bar_index, pl, lowClass, style=label.style_label_up, color=color.new(color.teal, 15), textcolor=color.white, size=size.tiny, tooltip="Swing low: " + price(pl) + "\nConfirmed after " + str.tostring(rightBars) + " closed bars.\n" + (backdate ? "Backdated to pivot bar." : "Shown on confirmation bar."), force_overlay=true)
+
+plot(rsi, "RSI (0-100)", color=color.rgb(159, 109, 255), linewidth=2)
+upper = hline(rsiUpper, "RSI upper", color=color.new(color.red, 30))
+lower = hline(rsiLower, "RSI lower", color=color.new(color.teal, 30))
+hline(50, "RSI midpoint", color=color.new(color.gray, 60))
+hline(0, "RSI floor", color=color.new(color.gray, 85))
+hline(100, "RSI ceiling", color=color.new(color.gray, 85))
+fill(upper, lower, color=color.new(color.purple, 94))
+plot(showEma ? emaFast : na, "Price EMA fast", color=color.orange, linewidth=2, force_overlay=true)
+plot(showEma ? emaSlow : na, "Price EMA slow", color=color.aqua, linewidth=2, force_overlay=true)
+pT3Fast = plot(showT3 ? t3Fast : na, "T3 FAST", color=color.lime, linewidth=2, force_overlay=true)
+pT3Slow = plot(showT3 ? t3Slow : na, "T3 SLOW", color=color.fuchsia, linewidth=2, force_overlay=true)
+fill(pT3Fast, pT3Slow, color=t3Fast >= t3Slow ? color.new(color.lime, 85) : color.new(color.fuchsia, 85), title="T3 state")
+plotshape(showT3Signals and t3LongEntry, "T3 long entry", style=shape.triangleup, location=location.belowbar, color=color.lime, size=size.small, text="T3 L", textcolor=color.lime, force_overlay=true)
+plotshape(showT3Signals and t3ShortEntry, "T3 short entry", style=shape.triangledown, location=location.abovebar, color=color.fuchsia, size=size.small, text="T3 S", textcolor=color.fuchsia, force_overlay=true)
+plotshape(showT3Signals and t3LongExit and not t3ShortEntry, "T3 long exit", style=shape.xcross, location=location.abovebar, color=color.orange, size=size.tiny, text="exit L", textcolor=color.orange, force_overlay=true)
+plotshape(showT3Signals and t3ShortExit and not t3LongEntry, "T3 short exit", style=shape.xcross, location=location.belowbar, color=color.aqua, size=size.tiny, text="exit S", textcolor=color.aqua, force_overlay=true)
+// Raw values also available in TradingView's Data Window; no impact on pane scale.
+plot(macd, "MACD (quote units)", display=display.data_window)
+plot(signal, "MACD signal (quote units)", display=display.data_window)
+plot(hist, "MACD histogram (quote units)", display=display.data_window)
+plot(relVolume, "Relative volume (x SMA)", display=display.data_window)
+plot(atr, "ATR (quote units)", display=display.data_window)
+
+var table dash = table.new(position.top_right, 2, 10, bgcolor=color.new(color.rgb(20, 25, 35), 8), frame_color=color.new(color.gray, 60), frame_width=1)
+if barstate.islast and showTable
+    quoteUnit = syminfo.currency
+    trend = emaFast > emaSlow ? "Fast > slow" : emaFast < emaSlow ? "Fast < slow" : "Equal"
+    table.cell(dash, 0, 0, "MKA Multi", text_color=color.white, text_size=size.small)
+    table.cell(dash, 1, 0, barstate.isconfirmed ? "CLOSED BAR" : "LIVE / provisional", text_color=barstate.isconfirmed ? color.teal : color.orange, text_size=size.small)
+    table.cell(dash, 0, 1, "RSI " + str.tostring(rsiLen), text_color=color.silver, text_size=size.small)
+    table.cell(dash, 1, 1, num(rsi), text_color=color.white, text_size=size.small)
+    table.cell(dash, 0, 2, "MACD / signal (" + quoteUnit + ")", text_color=color.silver, text_size=size.small)
+    table.cell(dash, 1, 2, num(macd) + " / " + num(signal), text_color=color.white, text_size=size.small)
+    table.cell(dash, 0, 3, "MACD hist (" + quoteUnit + ")", text_color=color.silver, text_size=size.small)
+    table.cell(dash, 1, 3, num(hist), text_color=hist >= 0 ? color.teal : color.red, text_size=size.small)
+    table.cell(dash, 0, 4, "EMA " + str.tostring(emaFastLen) + " / " + str.tostring(emaSlowLen), text_color=color.silver, text_size=size.small)
+    table.cell(dash, 1, 4, trend, text_color=emaFast >= emaSlow ? color.teal : color.orange, text_size=size.small)
+    table.cell(dash, 0, 5, "ATR " + str.tostring(atrLen), text_color=color.silver, text_size=size.small)
+    table.cell(dash, 1, 5, num(atr) + " " + quoteUnit + " / " + num(atrPct) + "%", text_color=color.white, text_size=size.small)
+    table.cell(dash, 0, 6, "Volume / SMA " + str.tostring(volLen), text_color=color.silver, text_size=size.small)
+    table.cell(dash, 1, 6, num(relVolume) + "x", text_color=color.white, text_size=size.small)
+    table.cell(dash, 0, 7, "Last confirmed H / L", text_color=color.silver, text_size=size.small)
+    table.cell(dash, 1, 7, highClass + " " + price(lastHigh) + " / " + lowClass + " " + price(lastLow), text_color=color.white, text_size=size.small)
+    table.cell(dash, 0, 8, "Swing delay", text_color=color.silver, text_size=size.small)
+    table.cell(dash, 1, 8, str.tostring(rightBars) + " bars" + (backdate ? " / BACKDATED" : " / at confirmation"), text_color=color.orange, text_size=size.small)
+    table.cell(dash, 0, 9, "T3 " + str.tostring(t3FastLen) + " / " + str.tostring(t3SlowLen), text_color=color.silver, text_size=size.small)
+    table.cell(dash, 1, 9, (t3Fast >= t3Slow ? "FAST > SLOW (bull)" : "FAST < SLOW (bear)") + (na(t3BarsSinceCross) ? "" : ", cross " + str.tostring(t3BarsSinceCross) + " bars ago"), text_color=t3Fast >= t3Slow ? color.lime : color.fuchsia, text_size=size.small)
+
+// Conditions only; no alerts are created automatically and no orders are placed.
+macdUp = ta.crossover(macd, signal)
+macdDown = ta.crossunder(macd, signal)
+alertcondition(barstate.isconfirmed and macdUp, "MACD bullish cross (closed bar)", "MACD crossed above its signal on a closed bar.")
+alertcondition(barstate.isconfirmed and macdDown, "MACD bearish cross (closed bar)", "MACD crossed below its signal on a closed bar.")
+alertcondition(newHigh, "Confirmed swing high", "A swing high was confirmed now; the pivot occurred Right bars earlier.")
+alertcondition(newLow, "Confirmed swing low", "A swing low was confirmed now; the pivot occurred Right bars earlier.")
+alertcondition(t3LongEntry, "T3 long entry (closed bar)", "T3 FAST crossed above T3 SLOW on a closed bar.")
+alertcondition(t3ShortEntry, "T3 short entry (closed bar)", "T3 FAST crossed below T3 SLOW on a closed bar.")
+alertcondition(t3LongExit, "T3 long exit (closed bar)", "T3 FAST crossed below T3 SLOW on a closed bar - exit longs.")
+alertcondition(t3ShortExit, "T3 short exit (closed bar)", "T3 FAST crossed above T3 SLOW on a closed bar - exit shorts.")

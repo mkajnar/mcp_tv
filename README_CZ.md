@@ -151,7 +151,7 @@ Výchozí odpověď je **WAIT**. Obchoduje se jen při souhlasu všech pravidel.
 
 ## 9. Pine indikátor s T3 (volitelné)
 
-Indikátor „MKA Multi“ (RSI, MACD, swingy, T3 FAST/SLOW) kreslí signály T3 L, T3 S, exit L a exit S a má alerty. Stejné T3 parametry používá i autoorder. Nahraješ ho přes AI: „otevři Pine editor, vlož skript a zkompiluj“ (`pine_set_source`, `pine_smart_compile`).
+Indikátor „MKA Multi“ (RSI, MACD, swingy, T3 FAST/SLOW) kreslí signály T3 L, T3 S, exit L a exit S a má alerty. Soubor je v repu: [`pine/milan_macd_rsi_swings.pine`](pine/milan_macd_rsi_swings.pine). Stejné T3 parametry používá i autoorder. Nahraješ ho přes AI: „otevři Pine editor, vlož skript a zkompiluj“ (`pine_set_source`, `pine_smart_compile`).
 
 ## 10. Logy a řešení problémů
 
