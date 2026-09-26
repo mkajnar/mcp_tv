@@ -5,6 +5,7 @@
 # Usage: powershell -ExecutionPolicy Bypass -File scripts/autoorder-loop.ps1 [-PauseSeconds 300] [-NoScreenshot]
 param(
   [int]$PauseSeconds = 300,       # rest between full passes over the 50 tickers
+  [int]$StartDelaySeconds = 0,    # wait before the first pass (keeps the schedule when restarting)
   [switch]$NoScreenshot = $true,  # skip the 5m screenshot (faster, less disk)
   [string]$RepoRoot = (Split-Path -Parent $PSScriptRoot)
 )
@@ -17,6 +18,7 @@ function Get-Top50 {
 }
 
 Write-Output (@{ ts = (Get-Date).ToUniversalTime().ToString("o"); message = "autoorder-loop started"; pause_seconds = $PauseSeconds } | ConvertTo-Json -Compress)
+if ($StartDelaySeconds -gt 0) { Start-Sleep -Seconds $StartDelaySeconds }
 
 while ($true) {
   try {
@@ -29,20 +31,29 @@ while ($true) {
   Write-Output (@{ ts = (Get-Date).ToUniversalTime().ToString("o"); message = "pass start"; count = $symbols.Count } | ConvertTo-Json -Compress)
 
   foreach ($sym in $symbols) {
-    $args = @("src/cli/index.js", "order", "auto", "BYBIT:${sym}.P")
-    if ($NoScreenshot) { $args += "--no-screenshot" }
+    $nodeArgs = @("src/cli/index.js", "order", "auto", "BYBIT:${sym}.P")
+    if ($NoScreenshot) { $nodeArgs += "--no-screenshot" }
     try {
-      $out = & node @args 2>&1 | Out-String
+      # The CLI writes failures as JSON to stderr; PowerShell 5.1 wraps stderr lines in ErrorRecords — unwrap them
+      $out = & node @nodeArgs 2>&1 | ForEach-Object {
+        if ($_ -is [System.Management.Automation.ErrorRecord]) { $_.Exception.Message } else { "$_" }
+      } | Out-String
       $parsed = $null
       try { $parsed = $out | ConvertFrom-Json } catch {}
       if ($parsed) {
         $dec = $parsed.decision
         $jev = $parsed.jev
+        $plan = $parsed.order.plan
+        # skip / error results have no decision (pending order or position already there, chart did not switch …)
+        $reasons = @($dec.reasons)
+        $reason = if ($reasons.Count -gt 0 -and $reasons[-1]) { $reasons[-1] } elseif ($parsed.reason) { $parsed.reason } else { $parsed.error }
+        $action = if ($dec) { $dec.action } elseif ($parsed.action) { $parsed.action } else { 'error' }
         Write-Output (@{
           ts = (Get-Date).ToUniversalTime().ToString("o"); symbol = $sym
-          action = $dec.action; side = $dec.side; type = $dec.type
+          action = $action; side = $dec.side; type = $dec.type
           jev_best = $jev.best_trade; jev_p_best = $jev.p_best; jev_p_wait = $jev.p_wait; jev_quality = $jev.quality
-          reason = $dec.reasons[-1]; order_ok = $parsed.order.success
+          reason = $reason; order_ok = $parsed.order.success
+          entry = $plan.entry; sl = $plan.sl; tp = $plan.tp
         } | ConvertTo-Json -Compress)
       } else {
         Write-Output (@{ ts = (Get-Date).ToUniversalTime().ToString("o"); symbol = $sym; raw = $out.Trim() } | ConvertTo-Json -Compress)
