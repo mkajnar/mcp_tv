@@ -162,6 +162,8 @@ export function entryQuestions({ entry_threshold = 0.6, rules_hint = false } = {
       instructions: 'You are a top 0.1% discretionary crypto futures trader. From the multi-timeframe OHLCV bars and indicator values in the state ' +
         '(1D, 1h, 15m, 5m, 1m: EMA 20/50/200 trend, market structure, RSI, ADX, ATR extension, Tillson T3 fast/slow, compression, relative volume, ' +
         'swing levels) decide the single best action now. Trade only with top-down alignment and room to the next opposing level for at least 2R. ' +
+        'Buy low, sell high: a long should enter in the lower half (discount) of the 1h swing range and a short in the upper half (premium) — ' +
+        'see location_1h_range.price_position; only a breakout stop entry may enter outside its zone. ' +
         (rules_hint ? 'The rules engine hint is only a second opinion. ' : '') + 'Prefer wait when in doubt.' },
     setup_quality: { type: 'score', threshold: 0.5, criteria: ['Poor', 'Weak', 'Average', 'Good', 'Excellent'],
       instructions: 'Rate the quality of the best available trade setup in this state (trend alignment, location, trigger, risk/reward, volatility).' },

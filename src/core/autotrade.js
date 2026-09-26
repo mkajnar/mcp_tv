@@ -13,6 +13,9 @@
  *  - structural stop behind the last 5m swing, must leave ≥ rr·R room to the next 1h/15m/daily level
  *  - T3 FAST/SLOW: 15m T3 must agree with the direction, no fresh 5m T3 cross against it;
  *    a fresh T3 cross in the trade direction on 5m/1m counts as a trigger
+ *  - buy low / sell high: longs only in the lower half (discount) of the 1h swing range, shorts only
+ *    in the upper half (premium); breakout stop entries are exempt. TP sits just in front of the
+ *    next opposing level (at least rr·R)
  *  - confluence score (0–100) must reach min_score
  */
 import { evaluate } from '../connection.js';
@@ -35,7 +38,7 @@ export const TIMEFRAMES = [
   { key: '1m', res: '1', sec: 60, weight: 0.05 },
 ];
 
-export const AUTO_DEFAULTS = { min_score: 65, min_bias: 0.35, bars: 400 };
+export const AUTO_DEFAULTS = { min_score: 65, min_bias: 0.35, bars: 400, zone_max: 0.5, tp_at_level: true };
 export const T3_DEFAULTS = { fast: 8, slow: 21, factor: 0.7 };
 
 // ── Indicators (closed bars) ────────────────────────────────────────────
@@ -157,7 +160,7 @@ export function analyzeTimeframe(rawBars, { pivot = 3, t3 = T3_DEFAULTS } = {}) 
  * Returns { action: 'trade' | 'wait', side, type, entry, sl, score, reasons, ... }.
  */
 export function decide(a, { bid, ask, min_tick, rr = 2, min_score = AUTO_DEFAULTS.min_score, min_bias = AUTO_DEFAULTS.min_bias,
-  cost_rate = 0.0004, min_sl_pct = 0.0015, max_cost_share = 0.3 }) {
+  cost_rate = 0.0004, min_sl_pct = 0.0015, max_cost_share = 0.3, zone_max = AUTO_DEFAULTS.zone_max, tp_at_level = AUTO_DEFAULTS.tp_at_level }) {
   const reasons = [];
   const bias = TIMEFRAMES.reduce((s, tf) => s + tf.weight * a[tf.key].trend, 0);
   const base = { bias: Number(bias.toFixed(3)), trends: Object.fromEntries(TIMEFRAMES.map(tf => [tf.key, a[tf.key].trend])) };
@@ -211,10 +214,11 @@ export function decide(a, { bid, ask, min_tick, rr = 2, min_score = AUTO_DEFAULT
   if (type !== 'market') entry = roundToStep(entry, min_tick, (dir === 1) === (type === 'limit') ? 'floor' : 'ceil');
   reasons.push(why);
 
-  const fin = finishPlan(a, { dir, type, entry, slRaw, slBasis, bid, ask, min_tick, rr, cost_rate, min_sl_pct, max_cost_share });
+  const fin = finishPlan(a, { dir, type, entry, slRaw, slBasis, bid, ask, min_tick, rr, cost_rate, min_sl_pct, max_cost_share, zone_max, tp_at_level });
   if (!fin.ok) return wait(fin.why, { plan: fin.plan });
   const { plan, nearest, roomR } = fin;
   reasons.push(nearest == null ? 'No opposing level in range (open space)' : `${roomR.toFixed(2)}R of room to the next level ${nearest}`);
+  if (fin.zone) reasons.push(`Entry at ${(fin.zone.position * 100).toFixed(0)} % of the 1h range ${fin.zone.low}–${fin.zone.high}${type === 'stop' ? ' (breakout — zone rule exempt)' : ''}; TP ${plan.tp} (${plan.tp_basis})`);
 
   const t3Pts = (m15.t3 && m15.t3.bull === (dir === 1) ? 4 : 0) + (m5.t3 && m5.t3.bull === (dir === 1) ? 3 : 0) + (t3Trigger ? 3 : 0);
   const sc = {
@@ -236,7 +240,8 @@ export function decide(a, { bid, ask, min_tick, rr = 2, min_score = AUTO_DEFAULT
  * Shared tail of every plan (rules or Jev): structural SL, stop width / cost guards and room to the next level.
  * Returns { ok, plan, nearest, roomR } or { ok: false, why, plan }.
  */
-export function finishPlan(a, { dir, type, entry, slRaw = null, slBasis = null, bid, ask, min_tick, rr = 2, cost_rate = 0.0004, min_sl_pct = 0.0015, max_cost_share = 0.3 }) {
+export function finishPlan(a, { dir, type, entry, slRaw = null, slBasis = null, bid, ask, min_tick, rr = 2, cost_rate = 0.0004, min_sl_pct = 0.0015, max_cost_share = 0.3,
+  zone_max = AUTO_DEFAULTS.zone_max, tp_at_level = AUTO_DEFAULTS.tp_at_level }) {
   const m15 = a['15m'], m5 = a['5m'];
   const side = dir === 1 ? 'long' : 'short';
   // Structural stop behind the most recent 5m swing beyond entry, buffered by 0.5 ATR(5m)
@@ -262,7 +267,42 @@ export function finishPlan(a, { dir, type, entry, slRaw = null, slBasis = null, 
   const nearest = levels.length ? (dir === 1 ? Math.min(...levels) : Math.max(...levels)) : null;
   const roomR = nearest == null ? Infinity : Math.abs(nearest - entry) / dist;
   if (roomR < rr) return { ok: false, plan, why: `Only ${roomR.toFixed(2)}R of room to the next ${dir === 1 ? 'resistance' : 'support'} ${nearest} — need ${rr}R` };
-  return { ok: true, plan, nearest, roomR };
+
+  // Buy low, sell high: a long enters in the discount (lower part) of the 1h swing range, a short in the premium.
+  // A breakout stop entry is a momentum setup and is exempt.
+  const zone = rangeZone(a['1h'], entry);
+  if (zone && zone_max != null && type !== 'stop') {
+    const inZone = dir === 1 ? zone.position <= zone_max : zone.position >= 1 - zone_max;
+    if (!inZone) return { ok: false, plan, zone, why: `Buy low / sell high: entry at ${(zone.position * 100).toFixed(0)} % of the 1h range ${zone.low}–${zone.high}` +
+      ` — a ${side} needs ${dir === 1 ? `≤ ${Math.round(zone_max * 100)} % (discount)` : `≥ ${Math.round((1 - zone_max) * 100)} % (premium)`}` };
+  }
+
+  // Sell high (short: buy low): TP just in front of the next opposing level, never closer than rr·R
+  let tp, tpBasis;
+  if (tp_at_level && nearest != null) {
+    let t = nearest - dir * Math.max(min_tick || 0, 0.1 * m5.atr);
+    if (Math.abs(t - entry) < rr * dist) t = entry + dir * rr * dist;
+    tp = roundToStep(t, min_tick, dir === 1 ? 'floor' : 'ceil');
+    tpBasis = `in front of the next ${dir === 1 ? 'resistance' : 'support'} ${nearest}`;
+  } else {
+    tp = roundToStep(entry + dir * rr * dist, min_tick, dir === 1 ? 'ceil' : 'floor');
+    tpBasis = `${rr}R`;
+  }
+  plan.tp = tp;
+  plan.tp_basis = tpBasis;
+  plan.rr_target = Number((Math.abs(tp - entry) / dist).toFixed(2));
+  return { ok: true, plan, nearest, roomR, zone };
+}
+
+/**
+ * Position of `price` in the 1h dealing range (last swing low → last swing high): 0 = low, 1 = high,
+ * < 0 below the range, > 1 above it. Falls back to the last two swings when the latest pair is inverted.
+ */
+export function rangeZone(t, price) {
+  let hi = t.swing_highs.at(-1), lo = t.swing_lows.at(-1);
+  if (!(hi > lo)) { hi = Math.max(...t.swing_highs.slice(-2)); lo = Math.min(...t.swing_lows.slice(-2)); }
+  if (!(hi > lo) || !Number.isFinite(hi) || !Number.isFinite(lo)) return null;
+  return { high: hi, low: lo, position: Number(((price - lo) / (hi - lo)).toFixed(3)) };
 }
 
 /**
@@ -307,6 +347,8 @@ export function buildJevState({ symbol, analysis, bars, quote, ruleDecision, rul
   }
   return {
     symbol, quote: { bid: quote.bid, ask: quote.ask },
+    location_1h_range: (() => { const z = rangeZone(analysis['1h'], (quote.bid + quote.ask) / 2);
+      return z ? { swing_low: r(z.low), swing_high: r(z.high), price_position: z.position, note: '0 = 1h swing low, 1 = 1h swing high' } : null; })(),
     ohlcv_columns: ['open', 'high', 'low', 'close', 'volume'],
     timeframes: tfs,
     rules_engine_hint: rulesHint && ruleDecision ? { action: ruleDecision.action, side: ruleDecision.side, type: ruleDecision.type ?? null,
@@ -359,7 +401,8 @@ export async function autoOrder({ symbol, dry_run = false, risk_usdt, min_score,
   const cfg = loadConfig();
   const auto = { ...AUTO_DEFAULTS, ...(cfg.auto || {}) };
   const opts = { min_score: min_score ?? auto.min_score, min_bias: min_bias ?? auto.min_bias, rr: cfg.rr,
-    cost_rate: cfg.fee_rate + cfg.slippage_rate, min_sl_pct: cfg.min_sl_pct, max_cost_share: cfg.max_cost_share };
+    cost_rate: cfg.fee_rate + cfg.slippage_rate, min_sl_pct: cfg.min_sl_pct, max_cost_share: cfg.max_cost_share,
+    zone_max: auto.zone_max, tp_at_level: auto.tp_at_level };
 
   const original = await chartState();
   const bare = symbol.includes(':') ? symbol.toUpperCase() : ':' + symbol.toUpperCase();
@@ -412,7 +455,8 @@ export async function autoOrder({ symbol, dry_run = false, risk_usdt, min_score,
           const fin = finishPlan(analysis, { ...q, dir: j.dir, ...e });
           const reasons = [j.why, ...(e.note ? [e.note] : [])];
           decision = fin.ok
-            ? { bias, trends, action: 'trade', ...fin.plan, reasons: [...reasons, fin.nearest == null ? 'No opposing level in range' : `${fin.roomR.toFixed(2)}R of room to ${fin.nearest}`],
+            ? { bias, trends, action: 'trade', ...fin.plan, reasons: [...reasons, fin.nearest == null ? 'No opposing level in range' : `${fin.roomR.toFixed(2)}R of room to ${fin.nearest}`,
+                ...(fin.zone ? [`Entry at ${(fin.zone.position * 100).toFixed(0)} % of the 1h range; TP ${fin.plan.tp} (${fin.plan.tp_basis})`] : [])],
                 nearest_level: fin.nearest, room_r: Number.isFinite(fin.roomR) ? Number(fin.roomR.toFixed(2)) : null, rules: ruleDecision.action }
             : { bias, trends, action: 'wait', side: null, reasons: [...reasons, `Guard: ${fin.why}`], plan: fin.plan, rules: ruleDecision.action };
         }
@@ -429,7 +473,7 @@ export async function autoOrder({ symbol, dry_run = false, risk_usdt, min_score,
       result.order = await placeOrder({
         symbol: full, side: decision.side, type: decision.type,
         price: decision.type === 'market' ? undefined : decision.entry,
-        sl: decision.sl, risk_usdt, dry_run,
+        sl: decision.sl, tp: decision.tp, risk_usdt, dry_run,
       });
       result.success = result.order.success;
     }

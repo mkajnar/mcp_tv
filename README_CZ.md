@@ -144,8 +144,9 @@ node src/cli/index.js order trail --watch 5
    - **limit:** přetažená cena, vstup na pullback k EMA20;
    - **stop:** průraz 5m komprese nebo nad spouštěcí svíčky.
 4. **SL:** za 5m swing ± 0.5 ATR. Odmítne se, když je příliš široký (> 3 ATR na 15m) nebo příliš těsný (`min_sl_pct`, `max_cost_share`).
-5. **Místo a skóre:** k nejbližší 1h, 15m nebo denní úrovni musí být aspoň rr·R prostoru a skóre souhlasných signálů musí být ≥ `min_score` (body za směr, režim, T3, polohu, spouštěč, momentum a objem).
-6. **Odeslání:** přes `order_place`, tedy money management, páka 10–50× podle 1h volatility, ověření a audit log.
+5. **Buy low, sell high:** long se zadá jen v dolní polovině 1h swing range (od posledního swing low k poslednímu swing high), short jen v horní polovině (`auto.zone_max`, 0.5). Stop vstupy na průraz jsou z pravidla vyjmuté. TP se dá těsně před nejbližší protilehlou úroveň, ale nikdy blíž než rr·R (`auto.tp_at_level`, true; při vypnutí pevně rr·R). Platí pro pravidla i pro JEV a JEV dostává polohu ceny v range ve state.
+6. **Místo a skóre:** k nejbližší 1h, 15m nebo denní úrovni musí být aspoň rr·R prostoru a skóre souhlasných signálů musí být ≥ `min_score` (body za směr, režim, T3, polohu, spouštěč, momentum a objem).
+7. **Odeslání:** přes `order_place`, tedy money management, páka 10–50× podle 1h volatility, ověření a audit log.
 
 Výchozí odpověď je **WAIT**. Obchoduje se jen při souhlasu všech pravidel.
 

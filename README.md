@@ -169,7 +169,8 @@ node src/cli/index.js order cancel
 3. Order type: **market** (pullback into value + 1m or T3 trigger), **limit** (extended → EMA20 pullback), **stop** (5m compression breakout / above trigger bars).
 4. Structural SL behind the 5m swing (± 0.5 ATR); refused if too wide (> 3 ATR 15m) or too tight (`min_sl_pct`, `max_cost_share`).
 5. Needs ≥ rr·R room to the next 1h/15m/daily level and a confluence score ≥ `min_score`.
-6. Sends via `order_place` (money management, leverage 10–50× from 1h volatility, verification, audit log).
+6. **Buy low, sell high:** a long enters only in the lower half (discount) of the 1h swing range (last swing low → last swing high), a short only in the upper half (premium) — `auto.zone_max` (0.5). Breakout stop entries are exempt. The TP sits just in front of the next opposing level (never closer than rr·R) — `auto.tp_at_level` (true); off = fixed rr·R.
+7. Sends via `order_place` (money management, leverage 10–50× from 1h volatility, verification, audit log).
 
 ### Pine indicator with T3 (optional)
 

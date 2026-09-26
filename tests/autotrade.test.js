@@ -5,7 +5,7 @@
  */
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { ema, rsi, adx, swings, analyzeTimeframe, decide } from '../src/core/autotrade.js';
+import { ema, rsi, adx, swings, analyzeTimeframe, decide, rangeZone } from '../src/core/autotrade.js';
 import { t3, t3State } from '../src/core/ta.js';
 
 describe('indicators', () => {
@@ -168,6 +168,55 @@ describe('decide', () => {
     const d = decide(a, Q);
     assert.equal(d.action, 'wait');
     assert.match(d.reasons.at(-1), /too tight/);
+  });
+
+  it('buy low: a long above the middle of the 1h range waits', () => {
+    // 1h range 94 → 99.5, entry 100 = 109 % → premium; next resistance (15m 112) is far, so only the zone blocks it
+    const a = up(); a['1h'].swing_highs = [95, 99.5]; a['1h'].swing_lows = [90, 94];
+    const d = decide(a, Q);
+    assert.equal(d.action, 'wait');
+    assert.match(d.reasons.at(-1), /Buy low \/ sell high/);
+  });
+
+  it('sell high: a short below the middle of the 1h range waits', () => {
+    const flip = (t) => tf({ ...t, trend: -0.8, structure: 'down', ema50: 102, ema200: 105, rsi: 45, rsi_prev: 50,
+      swing_highs: [104, 101.5], swing_lows: [90], last_bar: { open: 100.2, high: 100.3, low: 99.7, close: 99.8 }, prev_bar: { open: 100.5, high: 100.6, low: 99.9, close: 100.2 } });
+    const a = { '1d': flip({ last_bar: { high: 110, low: 80 } }), '1h': flip(), '15m': flip(), '5m': flip(), '1m': flip() };
+    a['1d'].swing_lows = [80]; a['1d'].last_bar = { high: 110, low: 80 }; a['1h'].swing_highs = [106]; a['1h'].swing_lows = [100.5];
+    const d = decide(a, Q);
+    assert.equal(d.action, 'wait');
+    assert.match(d.reasons.at(-1), /premium/);
+  });
+
+  it('a breakout stop entry is exempt from the zone rule', () => {
+    const a = up(); a['1h'].swing_highs = [95, 99.5]; a['1h'].swing_lows = [90, 94];
+    a['1m'] = tf({ rsi: 40, rsi_prev: 44, last_bar: { high: 100.4, low: 99.8, close: 99.9 }, prev_bar: { high: 100.6, low: 99.9, close: 100.1 } });
+    const d = decide(a, Q);
+    assert.equal(d.action, 'trade');
+    assert.equal(d.type, 'stop');
+  });
+
+  it('TP sits just in front of the next resistance', () => {
+    const d = decide(up(), Q);  // entry 100, SL 98, nearest level 112 (15m), buffer 0.1 ATR
+    assert.equal(d.tp, 111.9);
+    assert.equal(d.rr_target, 5.95);
+  });
+
+  it('TP never closer than rr·R', () => {
+    const a = up(); a['15m'].swing_highs = [104.05];
+    const d = decide(a, Q);
+    assert.equal(d.tp, 104);
+  });
+
+  it('TP = rr·R when tp_at_level is off', () => {
+    assert.equal(decide(up(), { ...Q, tp_at_level: false }).tp, 104);
+  });
+
+  it('rangeZone: 0 at the swing low, 1 at the swing high', () => {
+    const t = { swing_highs: [110], swing_lows: [100] };
+    assert.equal(rangeZone(t, 100).position, 0);
+    assert.equal(rangeZone(t, 105).position, 0.5);
+    assert.equal(rangeZone({ swing_highs: [], swing_lows: [] }, 1), null);
   });
 
   it('waits when resistance is closer than rr·R', () => {

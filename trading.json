@@ -51,6 +51,8 @@
   "auto": {
     "min_score": 65,
     "min_bias": 0.35,
-    "bars": 400
+    "bars": 400,
+    "zone_max": 0.5,
+    "tp_at_level": true
   }
 }
