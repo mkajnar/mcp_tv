@@ -39,7 +39,7 @@ export const TIMEFRAMES = [
   { key: '1m', res: '1', sec: 60, weight: 0.05 },
 ];
 
-export const AUTO_DEFAULTS = { min_score: 65, min_bias: 0.35, bars: 400, zone_max: 0.5, tp_at_level: true, t3_pullback_limit: true };
+export const AUTO_DEFAULTS = { min_score: 65, min_bias: 0.35, bars: 400, zone_max: 0.5, tp_at_level: true, t3_pullback_limit: true, loop_top: 50, loop_every_min: 20 };
 export const T3_DEFAULTS = { fast: 8, slow: 21, factor: 0.7 };
 
 // ── Indicators (closed bars) ────────────────────────────────────────────

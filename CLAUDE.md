@@ -91,7 +91,7 @@ Each call does the whole flow itself (account check → money management → gua
 - Live (non-demo) accounts are refused unless `"allow_live": true` or `TV_ALLOW_LIVE_TRADING=1`. Risk above `max_risk_usdt` is refused.
 - Every action is appended to `~/.tradingview-mcp/orders/YYYY-MM-DD.jsonl`. Never retry a failed `order_place` without `order_status` first.
 - ATR/swing are computed from the chart's current timeframe.
-- CLI without Claude: `tv order place sell`, `tv order trail`, `tv order trail --watch 30` (background loop), `tv order status|close|brackets|cancel`.
+- CLI without Claude: `tv order place sell`, `tv order trail`, `tv order trail --watch 30` (background loop; `--auto` also runs autoorder over the Bybit top 50 every 20 min when `scripts/autoorder-loop.ps1` is not running — `src/core/autoloop.js`), `tv order status|close|brackets|cancel`.
 
 ### "TradingView isn't running"
 - `tv_launch` → auto-detect and launch TradingView with CDP on Mac/Win/Linux

@@ -1,6 +1,7 @@
 import { register } from '../router.js';
 import * as core from '../../core/trading.js';
 import * as auto from '../../core/autotrade.js';
+import * as autoloop from '../../core/autoloop.js';
 
 const num = (v) => (v === undefined ? undefined : Number(v));
 
@@ -75,6 +76,9 @@ register('order', {
         'no-breakeven': { type: 'boolean', description: 'Do not use the break-even candidate' },
         'no-switch': { type: 'boolean', description: 'Never switch the chart (skip positions on other symbols)' },
         watch: { type: 'string', short: 'w', description: 'Repeat every N seconds' },
+        auto: { type: 'boolean', description: 'With --watch: also run autoorder over the Bybit top N, unless the standalone autoorder loop runs' },
+        'auto-top': { type: 'string', description: 'Tickers per autoorder pass (default trading.json auto.loop_top, 50)' },
+        'auto-every': { type: 'string', description: 'Minutes from the end of one autoorder pass to the next (default auto.loop_every_min, 20)' },
         'dry-run': { type: 'boolean', short: 'n', description: 'Compute only' },
       },
       handler: async (opts) => {
@@ -83,9 +87,35 @@ register('order', {
           breakeven: opts['no-breakeven'] ? false : undefined, switch_chart: opts['no-switch'] ? false : undefined,
         };
         const every = num(opts.watch);
+        if (opts.auto && !every) throw new Error('--auto needs --watch');
         if (!every) return core.trailStops(params);
         if (!(every >= 5)) throw new Error('--watch must be at least 5 seconds');
+        const log = (row) => console.log(JSON.stringify({ ts: new Date().toISOString(), ...row }));
+        // Autoorder passes run alongside the trail ticks (not awaited), each symbol in its own child process
+        const pass = { running: false, next: 0, skip: null };
+        const maybeAutoPass = () => {
+          if (!opts.auto || pass.running || Date.now() < pass.next) return;
+          const ac = { ...auto.AUTO_DEFAULTS, ...core.loadConfig().auto };
+          const top = num(opts['auto-top']) ?? ac.loop_top, everyMin = num(opts['auto-every']) ?? ac.loop_every_min;
+          pass.running = true;
+          autoloop.runAutoPass({ top, dry_run: params.dry_run, onEvent: log })
+            .then((r) => {
+              if (r.skipped) {
+                // Look again in a minute; log only when the reason changes
+                if (pass.skip !== r.skipped) log({ message: `autoorder pass skipped: ${r.skipped === 'standalone' ? 'the standalone autoorder loop is running' : 'another pass holds the lock'}` });
+                pass.skip = r.skipped;
+                pass.next = Date.now() + 60000;
+              } else {
+                pass.skip = null;
+                pass.next = Date.now() + everyMin * 60000;
+                log({ message: 'next autoorder pass', at: new Date(pass.next).toISOString() });
+              }
+            })
+            .catch((err) => { console.error(JSON.stringify({ ts: new Date().toISOString(), error: `autoorder pass: ${err.message}` })); pass.next = Date.now() + 60000; })
+            .finally(() => { pass.running = false; });
+        };
         for (;;) {
+          maybeAutoPass();
           try {
             const r = await core.trailStops(params);
             for (const row of r.results) {

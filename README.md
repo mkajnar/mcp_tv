@@ -153,13 +153,27 @@ Start-Process node -ArgumentList "src/cli/index.js","order","trail","--watch","5
 
 It prints one JSON line per position per tick (`skip` / `move` / `t3_exit`). Restart it after changing the code or `trading.json`.
 
+**Autoorder from the trail loop.** Add `--auto` and the same process also runs autoorder over the current Bybit top 50 (by 24h turnover) every 20 minutes:
+
+```bash
+node src/cli/index.js order trail --watch 5 --auto [--auto-top 50] [--auto-every 20]
+```
+
+- A pass walks the symbols one after another, each in its own `tv order auto <symbol> --no-screenshot` child process, so the trail ticks keep running every 5 s.
+- The next pass starts `--auto-every` minutes after the previous one ends (`auto.loop_top` 50, `auto.loop_every_min` 20 in `trading.json`).
+- It runs **only when the standalone PowerShell loop is not running** (`scripts/autoorder-loop.ps1`, found via `~/.tradingview-mcp/autoorder-loop.pid`). If the standalone loop starts mid-pass, the pass stops before the next symbol.
+- A running pass holds `~/.tradingview-mcp/autoorder.lock`; the standalone loop waits for it before its own pass.
+- Log lines: `autoorder pass start` / `done` with counts, one line per symbol (`auto: true`, action, side, type, entry / SL / TP, reason).
+
+Standalone loop (instead of `--auto`): `powershell -ExecutionPolicy Bypass -File scripts/autoorder-loop.ps1 -PauseSeconds 1200`.
+
 ### 7. The same without the AI (CLI)
 
 ```bash
 node src/cli/index.js order status
 node src/cli/index.js order place sell --risk 100 --dry-run
 node src/cli/index.js order auto BYBIT:BTCUSDT.P --no-screenshot [--dry-run]
-node src/cli/index.js order trail --watch 5
+node src/cli/index.js order trail --watch 5 [--auto]
 node src/cli/index.js order cancel
 ```
 

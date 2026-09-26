@@ -125,6 +125,20 @@ Každých 5 s vypíše pro každou pozici jeden JSON řádek s akcí `skip`, `mo
 
 Po změně kódu nebo `trading.json` trail restartuj.
 
+**Autoorder z trail smyčky.** S volbou `--auto` spouští stejný proces každých 20 minut i autoorder přes aktuální top 50 z Bybitu (podle 24h obratu):
+
+```bash
+node src/cli/index.js order trail --watch 5 --auto [--auto-top 50] [--auto-every 20]
+```
+
+- Kolo prochází symboly postupně, každý v samostatném podřízeném procesu `tv order auto <symbol> --no-screenshot`. Trail tak dál běží každých 5 s.
+- Další kolo začne `--auto-every` minut po konci předchozího (`auto.loop_top` 50, `auto.loop_every_min` 20 v `trading.json`).
+- Kolo se spustí **jen když neběží samostatná PowerShell smyčka** (`scripts/autoorder-loop.ps1`, pozná se podle `~/.tradingview-mcp/autoorder-loop.pid`). Když se samostatná smyčka spustí během kola, kolo skončí před dalším symbolem.
+- Běžící kolo drží zámek `~/.tradingview-mcp/autoorder.lock`. Samostatná smyčka na jeho konec počká.
+- V logu je `autoorder pass start` / `done` s počty a jeden řádek na symbol (`auto: true`, akce, směr, typ, entry / SL / TP, důvod).
+
+Samostatná smyčka (místo `--auto`): `powershell -ExecutionPolicy Bypass -File scripts/autoorder-loop.ps1 -PauseSeconds 1200`.
+
 ## 7. Totéž bez AI (CLI)
 
 ```bash
@@ -134,7 +148,7 @@ node src/cli/index.js order auto BYBIT:BTCUSDT.P --no-screenshot [--dry-run]
 node src/cli/index.js order brackets --sl 84300 --tp 83500
 node src/cli/index.js order close
 node src/cli/index.js order cancel [--id N]
-node src/cli/index.js order trail --watch 5
+node src/cli/index.js order trail --watch 5 [--auto]
 ```
 
 ## 8. Jak autoorder rozhoduje
@@ -168,7 +182,7 @@ Indikátor „MKA Multi“ (RSI, MACD, swingy, T3 FAST/SLOW) kreslí signály T3
 - **AI nepoužívá nový kód:** v Claude Code spusť `/mcp` → reconnect.
 - **„Chart did not switch“:** symbol v TradingView neexistuje nebo graf skočil jinam. Spusť to znovu.
 - **Páka:** Paper Trading nastavení páky přes API ignoruje. Vypočtená páka se jen reportuje, riziko se ale počítá ze SL, takže na něj páka vliv nemá.
-- **Unit testy:** `node --test tests/trading.test.js tests/autotrade.test.js`
+- **Unit testy:** `node --test tests/trading.test.js tests/autotrade.test.js tests/autoloop.test.js`
 
 ## Bezpečnost
 

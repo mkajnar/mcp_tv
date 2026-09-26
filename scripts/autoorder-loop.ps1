@@ -12,6 +12,22 @@ param(
 
 Set-Location $RepoRoot
 
+# The trail loop (`tv order trail --watch 5 --auto`) runs autoorder passes only while this loop is not
+# running: it looks for this pid file. A pass it already started holds the lock; wait for it to stop.
+$dataDir = Join-Path $env:USERPROFILE ".tradingview-mcp"
+New-Item -ItemType Directory -Force $dataDir | Out-Null
+$PID | Out-File -Encoding ascii (Join-Path $dataDir "autoorder-loop.pid")
+$lockFile = Join-Path $dataDir "autoorder.lock"
+
+function Get-LockHolder {
+  if (-not (Test-Path $lockFile)) { return $null }
+  try {
+    $lock = Get-Content -Raw $lockFile | ConvertFrom-Json
+    if ($lock.pid -and (Get-Process -Id $lock.pid -ErrorAction SilentlyContinue)) { return $lock }
+  } catch {}
+  return $null
+}
+
 function Get-Top50 {
   $json = node -e "fetch('https://api.bybit.com/v5/market/tickers?category=linear').then(r=>r.json()).then(j=>{const l=j.result.list.filter(t=>t.symbol.endsWith('USDT')).sort((a,b)=>b.turnover24h-a.turnover24h).slice(0,50).map(t=>t.symbol);console.log(JSON.stringify(l));})"
   return ($json | ConvertFrom-Json)
@@ -21,6 +37,11 @@ Write-Output (@{ ts = (Get-Date).ToUniversalTime().ToString("o"); message = "aut
 if ($StartDelaySeconds -gt 0) { Start-Sleep -Seconds $StartDelaySeconds }
 
 while ($true) {
+  $holder = Get-LockHolder
+  if ($holder) {
+    Write-Output (@{ ts = (Get-Date).ToUniversalTime().ToString("o"); message = "waiting for the running autoorder pass"; by = $holder.by; pid = $holder.pid } | ConvertTo-Json -Compress)
+    while (Get-LockHolder) { Start-Sleep -Seconds 10 }
+  }
   try {
     $symbols = Get-Top50
   } catch {
