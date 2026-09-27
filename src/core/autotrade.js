@@ -39,7 +39,7 @@ export const TIMEFRAMES = [
   { key: '1m', res: '1', sec: 60, weight: 0.05 },
 ];
 
-export const AUTO_DEFAULTS = { min_score: 65, min_bias: 0.35, bars: 400, zone_max: 0.5, tp_at_level: true, t3_pullback_limit: true, limit_entries: true, loop_top: 50, loop_every_min: 20 };
+export const AUTO_DEFAULTS = { min_score: 65, min_bias: 0.35, bars: 400, zone_max: 0.5, tp_at_level: true, t3_pullback_limit: true, limit_entries: true, max_same_side: 2, loop_top: 50, loop_every_min: 20 };
 export const T3_DEFAULTS = { fast: 8, slow: 21, factor: 0.7 };
 
 // ── Indicators (closed bars) ────────────────────────────────────────────
@@ -331,6 +331,18 @@ export function finishPlan(a, { dir, type, entry, slRaw = null, slBasis = null, 
 }
 
 /**
+ * Symbols already carrying exposure on `side` ('long' | 'short'): open positions on that side and pending entry
+ * orders that would open one (SL / TP brackets do not count). Input is the shape `status()` returns.
+ */
+export function sameSideExposure(side, { positions = [], working_orders = [] } = {}) {
+  const entrySide = side === 'long' ? 'buy' : 'sell';
+  return [...new Set([
+    ...positions.filter(p => p.side === side).map(p => p.symbol),
+    ...working_orders.filter(o => o.bracket_of == null && o.side === entrySide).map(o => o.symbol),
+  ])];
+}
+
+/**
  * Position of `price` in the 1h dealing range (last swing low → last swing high): 0 = low, 1 = high,
  * < 0 below the range, > 1 above it. Falls back to the last two swings when the latest pair is inverted.
  */
@@ -418,7 +430,15 @@ export async function autoOrder({ symbol, dry_run = false, risk_usdt, min_score,
     for (const tf of TIMEFRAMES) analysis[tf.key] = analyzeTimeframe(await loadBars(full, tf, auto.bars), { t3: { ...T3_DEFAULTS, ...(cfg.t3 || {}) } });
 
     const spec = await symbolSpec(full);
-    const decision = decide(analysis, { bid: spec.bid, ask: spec.ask, min_tick: spec.min_tick, ...opts });
+    let decision = decide(analysis, { bid: spec.bid, ask: spec.ask, min_tick: spec.min_tick, ...opts });
+    // Alts move together: on 27.9. one market dip stopped out AVAX and NEAR longs within 5 minutes
+    if (decision.action === 'trade' && auto.max_same_side > 0) {
+      const busy = sameSideExposure(decision.side, await status({}));
+      if (busy.length >= auto.max_same_side) {
+        decision = { ...decision, action: 'wait', reasons: [...decision.reasons, `Already ${busy.length} ${decision.side} position(s) / entry order(s) open` +
+          ` (${busy.map(s => s.replace(/^.*:/, '')).join(', ')}) — max ${auto.max_same_side} on one side (auto.max_same_side)`] };
+      }
+    }
     const timeframes = Object.fromEntries(TIMEFRAMES.map(tf => [tf.key, summarize(analysis[tf.key])]));
     logEvent({ event: 'autoorder_decision', symbol: full, dry_run, decision, timeframes });
 

@@ -5,7 +5,7 @@
  */
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { ema, rsi, adx, swings, analyzeTimeframe, decide, rangeZone, pullbackLimit } from '../src/core/autotrade.js';
+import { ema, rsi, adx, swings, analyzeTimeframe, decide, rangeZone, pullbackLimit, sameSideExposure } from '../src/core/autotrade.js';
 import { t3, t3State } from '../src/core/ta.js';
 
 describe('indicators', () => {
@@ -300,5 +300,27 @@ describe('decide', () => {
     assert.equal(d.side, 'short');
     assert.equal(d.entry, 99.99);
     assert.equal(d.sl, 102); // 5m swing high 101.5 + 0.5 ATR
+  });
+});
+
+describe('sameSideExposure (auto.max_same_side)', () => {
+  // 27.9.: UNI + AVAX + NEAR limit longs at once — one market dip stopped out two of them within 5 minutes
+  const st = {
+    positions: [{ symbol: 'BYBIT:UNIUSDT.P', side: 'long' }, { symbol: 'BYBIT:ETHUSDT.P', side: 'short' }],
+    working_orders: [
+      { symbol: 'BYBIT:AVAXUSDT.P', side: 'buy', type: 'limit', bracket_of: null },
+      { symbol: 'BYBIT:UNIUSDT.P', side: 'sell', type: 'stop', bracket_of: '42' },   // UNI's SL bracket, not an entry
+      { symbol: 'BYBIT:BTCUSDT.P', side: 'sell', type: 'stop', bracket_of: null },   // pending short entry
+    ],
+  };
+  it('counts long positions and pending buy entries, not brackets', () => {
+    assert.deepEqual(sameSideExposure('long', st), ['BYBIT:UNIUSDT.P', 'BYBIT:AVAXUSDT.P']);
+  });
+  it('shorts count separately (a hedge is not correlated exposure)', () => {
+    assert.deepEqual(sameSideExposure('short', st), ['BYBIT:ETHUSDT.P', 'BYBIT:BTCUSDT.P']);
+  });
+  it('a symbol with both a position and a pending entry counts once; empty account = none', () => {
+    assert.deepEqual(sameSideExposure('long', { positions: [{ symbol: 'X', side: 'long' }], working_orders: [{ symbol: 'X', side: 'buy', bracket_of: null }] }), ['X']);
+    assert.deepEqual(sameSideExposure('long', {}), []);
   });
 });

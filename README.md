@@ -114,6 +114,8 @@ Edit `trading.json` (repo root) or `~/.tradingview-mcp/trading.json` (overrides)
 | `trailing.trail_atr_mult` | 2 | ATR trail distance (5m ATR) once the trade is +`activate_r`·R |
 | `trailing.t3_exit` | false | Close position on a 5m T3 cross against it (off: in the 30-day replay it cut winners, −20.7R with it vs +11.5R without) |
 | `auto.limit_entries` | false | Resting pullback limit entries (off: ≈ 0R over ~160 replay trades, 3× the drawdown) |
+| `auto.t3_pullback_limit` | false | 15m T3 against + 1h T3 with the trade → limit on the nearest EMA (off: bought fresh 15m T3 turns, 27.9. AVAX / NEAR losses) |
+| `auto.max_same_side` | 2 | Max open positions + pending entries on one side across all symbols (alts stop out together) |
 | `t3` | 8 / 21 / 0.7 | T3 FAST / SLOW / volume factor |
 | `auto.min_score` / `min_bias` | 65 / 0.35 | autoorder strictness |
 | `allow_live` | false | Live accounts refused unless true |
@@ -192,7 +194,8 @@ node src/cli/index.js order cancel
 5. Needs ≥ rr·R room to the next 1h/15m/daily level and a confluence score ≥ `min_score`.
 6. **Buy low, sell high:** a long enters only in the lower half (discount) of the 1h swing range (last swing low → last swing high), a short only in the upper half (premium) — `auto.zone_max` (0.5). Only a 5m compression breakout (stop) is exempt — a stop above the 1m trigger bars is not. The TP sits just in front of the next opposing level (never closer than rr·R) — `auto.tp_at_level` (true); off = fixed rr·R.
 7. `auto.limit_entries` (false): resting pullback limits on/off. Off = such setups wait and a later pass enters with a market / stop order once the pullback turns (replay 28.8.–27.9., top 50: ~160 limit trades at ≈ 0R or worse under every exit setting, market / stop entries positive).
-8. Sends via `order_place` (money management, leverage 10–50× from 1h volatility, verification, audit log).
+8. `auto.max_same_side` (2): no new entry when two positions / pending entries on the same side are already open — on 27.9. a single market dip (BTC −0.4 %, alts −1.2 to −1.4 %) stopped out AVAX and NEAR longs within 5 minutes.
+9. Sends via `order_place` (money management, leverage 10–50× from 1h volatility, verification, audit log).
 
 ### Pine indicator with T3 (optional)
 

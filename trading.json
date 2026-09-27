@@ -43,8 +43,9 @@
     "bars": 400,
     "zone_max": 0.5,
     "tp_at_level": true,
-    "t3_pullback_limit": true,
+    "t3_pullback_limit": false,
     "limit_entries": false,
+    "max_same_side": 2,
     "loop_top": 50,
     "loop_every_min": 20
   }

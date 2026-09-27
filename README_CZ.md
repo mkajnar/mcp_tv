@@ -76,6 +76,8 @@ Uprav `trading.json` v kořeni repa. Soubor `~/.tradingview-mcp/trading.json` m�
 | `trailing.trail_atr_mult` | 2 | Vzdálenost ATR trailu (ATR z 5m) od +`activate_r`·R |
 | `trailing.t3_exit` | false | Zavře pozici při křížení T3 na 5m proti ní (vypnuto: v 30denním replayi ukončoval ziskové obchody, −20,7R se zapnutým, +11,5R bez něj) |
 | `auto.limit_entries` | false | Čekající limitní vstupy na pullback (vypnuto: kolem 0R na zhruba 160 obchodech v replayi a trojnásobný drawdown) |
+| `auto.t3_pullback_limit` | false | 15m T3 proti a 1h T3 ve směru → limit na nejbližší EMA (vypnuto: kupovalo čerstvý obrat 15m T3, ztráty AVAX a NEAR 27. 9.) |
+| `auto.max_same_side` | 2 | Nejvýš tolik otevřených pozic a čekajících vstupů stejným směrem přes všechny symboly (altcoiny padají spolu) |
 | `t3` | 8 / 21 / 0.7 | T3 FAST / SLOW / volume factor |
 | `auto.min_score` / `min_bias` | 65 / 0.35 | Přísnost autoorderu |
 | `allow_live` | false | Živé (ne-demo) účty jsou zablokované |
@@ -174,7 +176,8 @@ node src/cli/index.js order trail --watch 5 [--auto]
 5. **Buy low, sell high:** long se zadá jen v dolní polovině 1h swing range (od posledního swing low k poslednímu swing high), short jen v horní polovině (`auto.zone_max`, 0.5). Z pravidla je vyjmutý jen průraz 5m komprese (stop); stop nad spouštěcími 1m svíčkami pravidlo dodržuje. TP se dá těsně před nejbližší protilehlou úroveň, ale nikdy blíž než rr·R (`auto.tp_at_level`, true; při vypnutí pevně rr·R).
 6. **Místo a skóre:** k nejbližší 1h, 15m nebo denní úrovni musí být aspoň rr·R prostoru a skóre souhlasných signálů musí být ≥ `min_score` (body za směr, režim, T3, polohu, spouštěč, momentum a objem).
 7. **Limitní vstupy:** `auto.limit_entries` (výchozí false) zapíná a vypíná čekající limity na pullback. Při vypnutí takový setup počká a některé další kolo vstoupí market nebo stop objednávkou, až se pullback otočí. Replay 28. 8. – 27. 9. na top 50: kolem 160 limitních obchodů vyšlo kolem 0R nebo hůř při všech nastaveních výstupu, market a stop vstupy byly v plusu.
-8. **Odeslání:** přes `order_place`, tedy money management, páka 10–50× podle 1h volatility, ověření a audit log.
+8. **Souběh stejným směrem:** `auto.max_same_side` (2). Když jsou už otevřené dvě pozice nebo čekající vstupy stejným směrem, nový vstup se nezadá. 27. 9. jeden propad trhu (BTC −0,4 %, altcoiny −1,2 až −1,4 %) vzal SL u longů AVAX i NEAR během 5 minut.
+9. **Odeslání:** přes `order_place`, tedy money management, páka 10–50× podle 1h volatility, ověření a audit log.
 
 Výchozí odpověď je **WAIT**. Obchoduje se jen při souhlasu všech pravidel.
 
