@@ -28,8 +28,8 @@
     "guard_pending": true,
     "keep_awake": true,
     "pending_ttl_min": 60,
-    "t3_exit": true,
-    "trail_atr_mult": 1.0,
+    "t3_exit": false,
+    "trail_atr_mult": 2.0,
     "min_gap_atr": 0.25,
     "min_step_atr": 0.1,
     "breakeven": true,
@@ -44,7 +44,7 @@
     "zone_max": 0.5,
     "tp_at_level": true,
     "t3_pullback_limit": true,
-    "limit_entries": true,
+    "limit_entries": false,
     "loop_top": 50,
     "loop_every_min": 20
   }

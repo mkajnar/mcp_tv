@@ -73,7 +73,9 @@ Uprav `trading.json` v kořeni repa. Soubor `~/.tradingview-mcp/trading.json` m�
 | `leverage.min` / `max` | 10 / 50 | Rozsah páky podle volatility za poslední hodinu |
 | `trailing.activate_r` | 0.75 | Trail začne při +0.75R, nejdřív posune SL na break-even |
 | `trailing.guard_pending` / `pending_ttl_min` | true / 60 | Zruší čekající vstup, když cena projde přes jeho SL, nebo když se do 60 min nevyplní |
-| `trailing.t3_exit` | true | Zavře pozici při křížení T3 na 5m proti ní |
+| `trailing.trail_atr_mult` | 2 | Vzdálenost ATR trailu (ATR z 5m) od +`activate_r`·R |
+| `trailing.t3_exit` | false | Zavře pozici při křížení T3 na 5m proti ní (vypnuto: v 30denním replayi ukončoval ziskové obchody, −20,7R se zapnutým, +11,5R bez něj) |
+| `auto.limit_entries` | false | Čekající limitní vstupy na pullback (vypnuto: kolem 0R na zhruba 160 obchodech v replayi a trojnásobný drawdown) |
 | `t3` | 8 / 21 / 0.7 | T3 FAST / SLOW / volume factor |
 | `auto.min_score` / `min_bias` | 65 / 0.35 | Přísnost autoorderu |
 | `allow_live` | false | Živé (ne-demo) účty jsou zablokované |
@@ -119,9 +121,9 @@ Každých 5 s vypíše pro každou pozici jeden JSON řádek s akcí `skip`, `mo
 - Čekající vstupy trail hlídá: když cena projde přes SL objednávky dřív, než se vyplní, nebo když se do `trailing.pending_ttl_min` (60 min) nevyplní, objednávku zruší.
 - Původní SL se nechá, dokud pozice nedosáhne +0.75R.
 - Pak se SL posune aspoň na break-even (včetně poplatků).
-- Dál se SL posouvá o 1× ATR z 5m svíček (Bybit), s minimální mezerou a minimálním krokem.
+- Dál se SL posouvá o `trailing.trail_atr_mult` × ATR z 5m svíček (Bybit, výchozí 2×), s minimální mezerou a minimálním krokem.
 - SL se nikdy nepovoluje a TP se nemění.
-- Při křížení T3 FAST/SLOW na 5m proti pozici se pozice zavře.
+- S `trailing.t3_exit` (výchozí vypnuto) se pozice při křížení T3 FAST/SLOW na 5m proti ní zavře.
 
 Po změně kódu nebo `trading.json` trail restartuj.
 
@@ -171,7 +173,7 @@ node src/cli/index.js order trail --watch 5 [--auto]
 4. **SL:** za 5m swing ± 0.5 ATR. Odmítne se, když je příliš široký (> 3 ATR na 15m) nebo příliš těsný (`min_sl_pct`, `max_cost_share`).
 5. **Buy low, sell high:** long se zadá jen v dolní polovině 1h swing range (od posledního swing low k poslednímu swing high), short jen v horní polovině (`auto.zone_max`, 0.5). Z pravidla je vyjmutý jen průraz 5m komprese (stop); stop nad spouštěcími 1m svíčkami pravidlo dodržuje. TP se dá těsně před nejbližší protilehlou úroveň, ale nikdy blíž než rr·R (`auto.tp_at_level`, true; při vypnutí pevně rr·R).
 6. **Místo a skóre:** k nejbližší 1h, 15m nebo denní úrovni musí být aspoň rr·R prostoru a skóre souhlasných signálů musí být ≥ `min_score` (body za směr, režim, T3, polohu, spouštěč, momentum a objem).
-7. **Limitní vstupy:** `auto.limit_entries` (true) zapíná a vypíná čekající limity na pullback. Při vypnutí takový setup počká a některé další kolo vstoupí market nebo stop objednávkou, až se pullback otočí. Replay 28. 8. – 27. 9. na top 50: kolem 160 limitních obchodů vyšlo kolem 0R nebo hůř při všech nastaveních výstupu, market a stop vstupy byly v plusu.
+7. **Limitní vstupy:** `auto.limit_entries` (výchozí false) zapíná a vypíná čekající limity na pullback. Při vypnutí takový setup počká a některé další kolo vstoupí market nebo stop objednávkou, až se pullback otočí. Replay 28. 8. – 27. 9. na top 50: kolem 160 limitních obchodů vyšlo kolem 0R nebo hůř při všech nastaveních výstupu, market a stop vstupy byly v plusu.
 8. **Odeslání:** přes `order_place`, tedy money management, páka 10–50× podle 1h volatility, ověření a audit log.
 
 Výchozí odpověď je **WAIT**. Obchoduje se jen při souhlasu všech pravidel.

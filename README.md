@@ -25,7 +25,7 @@ Orders go to the broker connected in TradingView's Trading Panel (**Paper Tradin
   "fee_rate": 0.0002, "slippage_rate": 0.0002, "allow_live": false,
   "leverage": { "enabled": true, "min": 10, "max": 50, "vol_mult": 3, "sl_mult": 2, "maintenance_margin": 0.005 },
   "t3": { "fast": 8, "slow": 21, "factor": 0.7 },
-  "trailing": { "activate_r": 0.75, "guard_pending": true, "pending_ttl_min": 60, "t3_exit": true, "trail_atr_mult": 1.0, "min_gap_atr": 0.25, "min_step_atr": 0.1, "breakeven": true, "switch_chart": true, "bars_source": "bybit", "atr_timeframe": "5" },
+  "trailing": { "activate_r": 0.75, "guard_pending": true, "pending_ttl_min": 60, "t3_exit": false, "trail_atr_mult": 2.0, "min_gap_atr": 0.25, "min_step_atr": 0.1, "breakeven": true, "switch_chart": true, "bars_source": "bybit", "atr_timeframe": "5" },
   "auto": { "min_score": 65, "min_bias": 0.35, "bars": 400 }
 }
 ```
@@ -111,7 +111,9 @@ Edit `trading.json` (repo root) or `~/.tradingview-mcp/trading.json` (overrides)
 | `leverage.min` / `max` | 10 / 50 | Volatility-based leverage range |
 | `trailing.activate_r` | 0.75 | Trail starts at +0.75R (break-even first) |
 | `trailing.guard_pending` / `pending_ttl_min` | true / 60 | Cancel pending entries when price trades through their SL, or after 60 min unfilled |
-| `trailing.t3_exit` | true | Close position on a 5m T3 cross against it |
+| `trailing.trail_atr_mult` | 2 | ATR trail distance (5m ATR) once the trade is +`activate_r`·R |
+| `trailing.t3_exit` | false | Close position on a 5m T3 cross against it (off: in the 30-day replay it cut winners, −20.7R with it vs +11.5R without) |
+| `auto.limit_entries` | false | Resting pullback limit entries (off: ≈ 0R over ~160 replay trades, 3× the drawdown) |
 | `t3` | 8 / 21 / 0.7 | T3 FAST / SLOW / volume factor |
 | `auto.min_score` / `min_bias` | 65 / 0.35 | autoorder strictness |
 | `allow_live` | false | Live accounts refused unless true |
@@ -189,7 +191,7 @@ node src/cli/index.js order cancel
 4. Structural SL behind the 5m swing (± 0.5 ATR); refused if too wide (> 3 ATR 15m) or too tight (`min_sl_pct`, `max_cost_share`).
 5. Needs ≥ rr·R room to the next 1h/15m/daily level and a confluence score ≥ `min_score`.
 6. **Buy low, sell high:** a long enters only in the lower half (discount) of the 1h swing range (last swing low → last swing high), a short only in the upper half (premium) — `auto.zone_max` (0.5). Only a 5m compression breakout (stop) is exempt — a stop above the 1m trigger bars is not. The TP sits just in front of the next opposing level (never closer than rr·R) — `auto.tp_at_level` (true); off = fixed rr·R.
-7. `auto.limit_entries` (true): resting pullback limits on/off. Off = such setups wait and a later pass enters with a market / stop order once the pullback turns (replay 28.8.–27.9., top 50: ~160 limit trades at ≈ 0R or worse under every exit setting, market / stop entries positive).
+7. `auto.limit_entries` (false): resting pullback limits on/off. Off = such setups wait and a later pass enters with a market / stop order once the pullback turns (replay 28.8.–27.9., top 50: ~160 limit trades at ≈ 0R or worse under every exit setting, market / stop entries positive).
 8. Sends via `order_place` (money management, leverage 10–50× from 1h volatility, verification, audit log).
 
 ### Pine indicator with T3 (optional)
