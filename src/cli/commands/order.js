@@ -2,6 +2,7 @@ import { register } from '../router.js';
 import * as core from '../../core/trading.js';
 import * as auto from '../../core/autotrade.js';
 import * as autoloop from '../../core/autoloop.js';
+import { keepAwake } from '../../core/keepawake.js';
 
 const num = (v) => (v === undefined ? undefined : Number(v));
 
@@ -91,6 +92,8 @@ register('order', {
         if (!every) return core.trailStops(params);
         if (!(every >= 5)) throw new Error('--watch must be at least 5 seconds');
         const log = (row) => console.log(JSON.stringify({ ts: new Date().toISOString(), ...row }));
+        // A sleeping laptop suspends the loop (and TradingView) — hold the system and display on while it runs
+        if (core.loadConfig().trailing.keep_awake !== false) log({ message: 'keep-awake on: system and display stay on while the loop runs', helper_pid: keepAwake() });
         // Autoorder passes run alongside the trail ticks (not awaited), each symbol in its own child process
         const pass = { running: false, next: 0, skip: null };
         const maybeAutoPass = () => {
@@ -100,6 +103,8 @@ register('order', {
           pass.running = true;
           autoloop.runAutoPass({ top, dry_run: params.dry_run, onEvent: log })
             .then((r) => {
+              // Broker disconnected: the pass already logged why it stopped — try again in a minute
+              if (r.skipped === 'broker') { pass.skip = null; pass.next = Date.now() + 60000; return; }
               if (r.skipped) {
                 // Look again in a minute; log only when the reason changes
                 if (pass.skip !== r.skipped) log({ message: `autoorder pass skipped: ${r.skipped === 'standalone' ? 'the standalone autoorder loop is running' : 'another pass holds the lock'}` });

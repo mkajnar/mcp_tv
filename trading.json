@@ -26,6 +26,7 @@
   "trailing": {
     "activate_r": 0.75,
     "guard_pending": true,
+    "keep_awake": true,
     "pending_ttl_min": 60,
     "t3_exit": true,
     "trail_atr_mult": 1.0,
@@ -43,6 +44,7 @@
     "zone_max": 0.5,
     "tp_at_level": true,
     "t3_pullback_limit": true,
+    "limit_entries": true,
     "loop_top": 50,
     "loop_every_min": 20
   }

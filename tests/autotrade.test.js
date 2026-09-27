@@ -126,6 +126,20 @@ describe('decide', () => {
     assert.ok(d.sl < 97.5);
   });
 
+  it('limit_entries off → the same over-extended setup waits instead of resting a limit', () => {
+    const a = up(); a['15m'] = tf({ extension: 2.1, ema20: 97.5, swing_highs: [112] });
+    const d = decide(a, { ...Q, limit_entries: false });
+    assert.equal(d.action, 'wait');
+    assert.match(d.reasons.at(-1), /Pullback limit entries are off .* limit on the 15m EMA20 pullback/);
+  });
+
+  it('limit_entries off leaves market and stop entries alone', () => {
+    const a = up(); a['5m'] = tf({ compressed: true, close: 101.6, range: { high: 102, low: 100, size_atr: 2 }, extension: 1.2, rel_vol: 1.5 });
+    a['15m'] = tf({ extension: 1.0, swing_highs: [112] });
+    assert.equal(decide(a, { ...Q, limit_entries: false }).type, 'stop');
+    assert.equal(decide(up(), { ...Q, limit_entries: false }).type, 'market');
+  });
+
   it('5m compression at the high → buy stop above the range', () => {
     const a = up(); a['5m'] = tf({ compressed: true, close: 101.6, range: { high: 102, low: 100, size_atr: 2 }, extension: 1.2, rel_vol: 1.5 });
     a['15m'] = tf({ extension: 1.0, swing_highs: [112] });

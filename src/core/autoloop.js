@@ -102,22 +102,43 @@ export function summarizeAuto(symbol, res) {
 }
 
 /**
+ * Kind of a failed symbol: 'broker' (TradingView trading panel disconnected — the rest of the pass would fail
+ * the same way), 'data' (the chart cannot load enough bars: fresh listing, sparse stock perp) or null.
+ */
+export function errorKind(reason) {
+  if (/broker is not connected|no broker connected|quotesSnapshot not received/i.test(reason || '')) return 'broker';
+  if (/did not load|not enough closed bars/i.test(reason || '')) return 'data';
+  return null;
+}
+
+const DATA_SKIP_MS = 6 * 3600000;
+const dataSkipUntil = new Map(); // symbol → ms; lives as long as the trail loop process
+
+/**
  * One autoorder pass over the current top N. Returns { skipped: 'standalone' | 'locked' } without doing
- * anything when the standalone loop runs or another pass holds the lock; otherwise { counts }.
+ * anything when the standalone loop runs or another pass holds the lock, { skipped: 'broker' } when the
+ * broker turned out to be disconnected (pass stopped), otherwise { counts }. Symbols whose bars did not load
+ * are left out for 6 hours.
  */
 export async function runAutoPass({ top = 50, dry_run = false, onEvent = () => {}, by = 'trail-loop' } = {}) {
   if (standaloneLoopRunning()) return { skipped: 'standalone' };
   if (lockHolder()) return { skipped: 'locked' };
   takeLock(by);
   try {
-    const symbols = await topSymbols(top);
-    onEvent({ message: 'autoorder pass start', count: symbols.length, dry_run });
+    const now = Date.now();
+    const all = await topSymbols(top);
+    const symbols = all.filter(s => !((dataSkipUntil.get(s) || 0) > now));
+    const left_out = all.filter(s => !symbols.includes(s));
+    onEvent({ message: 'autoorder pass start', count: symbols.length, dry_run, ...(left_out.length ? { left_out } : {}) });
     const counts = {};
     for (const s of symbols) {
       if (standaloneLoopRunning()) { onEvent({ message: 'autoorder pass stopped — the standalone autoorder loop started' }); break; }
       const row = summarizeAuto(s, await runOne(s, { dry_run }));
       counts[row.action] = (counts[row.action] || 0) + 1;
       onEvent({ auto: true, ...row });
+      const kind = row.action === 'error' ? errorKind(row.reason) : null;
+      if (kind === 'data') dataSkipUntil.set(s, Date.now() + DATA_SKIP_MS);
+      if (kind === 'broker') { onEvent({ message: 'autoorder pass stopped — broker not connected', counts }); return { skipped: 'broker', counts }; }
     }
     onEvent({ message: 'autoorder pass done', counts });
     return { counts };

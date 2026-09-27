@@ -136,6 +136,10 @@ node src/cli/index.js order trail --watch 5 --auto [--auto-top 50] [--auto-every
 - Kolo se spustí **jen když neběží samostatná PowerShell smyčka** (`scripts/autoorder-loop.ps1`, pozná se podle `~/.tradingview-mcp/autoorder-loop.pid`). Když se samostatná smyčka spustí během kola, kolo skončí před dalším symbolem.
 - Běžící kolo drží zámek `~/.tradingview-mcp/autoorder.lock`. Samostatná smyčka na jeho konec počká.
 - V logu je `autoorder pass start` / `done` s počty a jeden řádek na symbol (`auto: true`, akce, směr, typ, entry / SL / TP, důvod).
+- Když je broker odpojený (`Broker is not connected`), kolo skončí hned u prvního symbolu a zkusí to znovu za minutu, místo aby 50× selhalo.
+- Symboly, pro které se nenačtou svíčky (nové listingy s málo denními svíčkami, řídce obchodované akciové perpetuály), se na 6 hodin vynechají (`left_out` na řádku startu kola).
+
+**Počítač musí zůstat vzhůru.** Na notebooku s moderním úsporným režimem (Modern Standby) je vypnutí obrazovky zároveň přechodem do úsporného režimu. Windows v něm pozastaví trail, autoorder i TradingView až do dalšího probuzení: v logu pak jsou hodinové mezery a broker se může vrátit odpojený. `trail --watch` proto po dobu běhu drží systém i displej zapnutý (`trailing.keep_awake`, výchozí true; skrytý PowerShell pomocník, který skončí spolu se smyčkou). Ruční uspání (tlačítko napájení, zavření víka, Start → Režim spánku) ale vše pozastaví. Když má smyčka obchodovat, nech notebook zapnutý a v síti.
 
 Samostatná smyčka (místo `--auto`): `powershell -ExecutionPolicy Bypass -File scripts/autoorder-loop.ps1 -PauseSeconds 1200`.
 
@@ -167,7 +171,8 @@ node src/cli/index.js order trail --watch 5 [--auto]
 4. **SL:** za 5m swing ± 0.5 ATR. Odmítne se, když je příliš široký (> 3 ATR na 15m) nebo příliš těsný (`min_sl_pct`, `max_cost_share`).
 5. **Buy low, sell high:** long se zadá jen v dolní polovině 1h swing range (od posledního swing low k poslednímu swing high), short jen v horní polovině (`auto.zone_max`, 0.5). Z pravidla je vyjmutý jen průraz 5m komprese (stop); stop nad spouštěcími 1m svíčkami pravidlo dodržuje. TP se dá těsně před nejbližší protilehlou úroveň, ale nikdy blíž než rr·R (`auto.tp_at_level`, true; při vypnutí pevně rr·R).
 6. **Místo a skóre:** k nejbližší 1h, 15m nebo denní úrovni musí být aspoň rr·R prostoru a skóre souhlasných signálů musí být ≥ `min_score` (body za směr, režim, T3, polohu, spouštěč, momentum a objem).
-7. **Odeslání:** přes `order_place`, tedy money management, páka 10–50× podle 1h volatility, ověření a audit log.
+7. **Limitní vstupy:** `auto.limit_entries` (true) zapíná a vypíná čekající limity na pullback. Při vypnutí takový setup počká a některé další kolo vstoupí market nebo stop objednávkou, až se pullback otočí. Replay 28. 8. – 27. 9. na top 50: kolem 160 limitních obchodů vyšlo kolem 0R nebo hůř při všech nastaveních výstupu, market a stop vstupy byly v plusu.
+8. **Odeslání:** přes `order_place`, tedy money management, páka 10–50× podle 1h volatility, ověření a audit log.
 
 Výchozí odpověď je **WAIT**. Obchoduje se jen při souhlasu všech pravidel.
 

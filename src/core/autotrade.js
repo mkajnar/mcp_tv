@@ -39,7 +39,7 @@ export const TIMEFRAMES = [
   { key: '1m', res: '1', sec: 60, weight: 0.05 },
 ];
 
-export const AUTO_DEFAULTS = { min_score: 65, min_bias: 0.35, bars: 400, zone_max: 0.5, tp_at_level: true, t3_pullback_limit: true, loop_top: 50, loop_every_min: 20 };
+export const AUTO_DEFAULTS = { min_score: 65, min_bias: 0.35, bars: 400, zone_max: 0.5, tp_at_level: true, t3_pullback_limit: true, limit_entries: true, loop_top: 50, loop_every_min: 20 };
 export const T3_DEFAULTS = { fast: 8, slow: 21, factor: 0.7 };
 
 // ── Indicators (closed bars) ────────────────────────────────────────────
@@ -162,7 +162,7 @@ export function analyzeTimeframe(rawBars, { pivot = 3, t3 = T3_DEFAULTS } = {}) 
  */
 export function decide(a, { bid, ask, min_tick, rr = 2, min_score = AUTO_DEFAULTS.min_score, min_bias = AUTO_DEFAULTS.min_bias,
   cost_rate = 0.0004, min_sl_pct = 0.0015, max_cost_share = 0.3, zone_max = AUTO_DEFAULTS.zone_max, tp_at_level = AUTO_DEFAULTS.tp_at_level,
-  t3_pullback_limit = AUTO_DEFAULTS.t3_pullback_limit }) {
+  t3_pullback_limit = AUTO_DEFAULTS.t3_pullback_limit, limit_entries = AUTO_DEFAULTS.limit_entries }) {
   const reasons = [];
   const bias = TIMEFRAMES.reduce((s, tf) => s + tf.weight * a[tf.key].trend, 0);
   const base = { bias: Number(bias.toFixed(3)), trends: Object.fromEntries(TIMEFRAMES.map(tf => [tf.key, a[tf.key].trend])) };
@@ -228,6 +228,9 @@ export function decide(a, { bid, ask, min_tick, rr = 2, min_score = AUTO_DEFAULT
     why = `${t3Reason}, but the 1h T3 is with the ${side} — pullback in progress, limit on the ${pull.basis}`;
   }
   if (type === 'limit' && !t3Aligned1h) return wait(`1h T3 FAST is ${a['1h'].t3.bull ? 'above' : 'below'} T3 SLOW — against a ${side} pullback limit`);
+  // Resting pullback limits fill when price runs into them — replay 28.8.–27.9. (top 50): 161–167 limit trades at ≈ 0R or worse
+  // under every exit setting, market / stop entries positive. Off = wait for the pullback to turn (market / stop entry on a later pass).
+  if (type === 'limit' && !limit_entries) return wait(`Pullback limit entries are off (auto.limit_entries) — ${why}`);
 
   if (type !== 'market') entry = roundToStep(entry, min_tick, (dir === 1) === (type === 'limit') ? 'floor' : 'ceil');
   reasons.push(why);
@@ -384,7 +387,8 @@ export async function autoOrder({ symbol, dry_run = false, risk_usdt, min_score,
   const auto = { ...AUTO_DEFAULTS, ...(cfg.auto || {}) };
   const opts = { min_score: min_score ?? auto.min_score, min_bias: min_bias ?? auto.min_bias, rr: cfg.rr,
     cost_rate: cfg.fee_rate + cfg.slippage_rate, min_sl_pct: cfg.min_sl_pct, max_cost_share: cfg.max_cost_share,
-    zone_max: auto.zone_max, tp_at_level: auto.tp_at_level, t3_pullback_limit: auto.t3_pullback_limit };
+    zone_max: auto.zone_max, tp_at_level: auto.tp_at_level, t3_pullback_limit: auto.t3_pullback_limit,
+    limit_entries: auto.limit_entries };
 
   const original = await chartState();
   const bare = symbol.includes(':') ? symbol.toUpperCase() : ':' + symbol.toUpperCase();

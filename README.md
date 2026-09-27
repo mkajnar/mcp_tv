@@ -164,6 +164,10 @@ node src/cli/index.js order trail --watch 5 --auto [--auto-top 50] [--auto-every
 - It runs **only when the standalone PowerShell loop is not running** (`scripts/autoorder-loop.ps1`, found via `~/.tradingview-mcp/autoorder-loop.pid`). If the standalone loop starts mid-pass, the pass stops before the next symbol.
 - A running pass holds `~/.tradingview-mcp/autoorder.lock`; the standalone loop waits for it before its own pass.
 - Log lines: `autoorder pass start` / `done` with counts, one line per symbol (`auto: true`, action, side, type, entry / SL / TP, reason).
+- When the broker is disconnected (`Broker is not connected`), the pass stops at the first symbol and retries a minute later instead of failing 50 times.
+- Symbols whose bars do not load (fresh listings with too few daily bars, sparse stock perps) are left out for 6 hours (`left_out` in the start line).
+
+**Keep the machine awake.** On a laptop with Modern Standby, turning the screen off *is* the standby entry, and in standby Windows suspends the trail loop, autoorder and TradingView until the next wake (the log then shows hour-long gaps, and the broker may come back disconnected). `trail --watch` therefore holds the system and display on while it runs (`trailing.keep_awake`, default true; a hidden PowerShell helper that exits with the loop). A manual sleep — power button, closing the lid, Start → Sleep — still suspends everything: leave the laptop on and plugged in while the loop should trade.
 
 Standalone loop (instead of `--auto`): `powershell -ExecutionPolicy Bypass -File scripts/autoorder-loop.ps1 -PauseSeconds 1200`.
 
@@ -185,7 +189,8 @@ node src/cli/index.js order cancel
 4. Structural SL behind the 5m swing (± 0.5 ATR); refused if too wide (> 3 ATR 15m) or too tight (`min_sl_pct`, `max_cost_share`).
 5. Needs ≥ rr·R room to the next 1h/15m/daily level and a confluence score ≥ `min_score`.
 6. **Buy low, sell high:** a long enters only in the lower half (discount) of the 1h swing range (last swing low → last swing high), a short only in the upper half (premium) — `auto.zone_max` (0.5). Only a 5m compression breakout (stop) is exempt — a stop above the 1m trigger bars is not. The TP sits just in front of the next opposing level (never closer than rr·R) — `auto.tp_at_level` (true); off = fixed rr·R.
-7. Sends via `order_place` (money management, leverage 10–50× from 1h volatility, verification, audit log).
+7. `auto.limit_entries` (true): resting pullback limits on/off. Off = such setups wait and a later pass enters with a market / stop order once the pullback turns (replay 28.8.–27.9., top 50: ~160 limit trades at ≈ 0R or worse under every exit setting, market / stop entries positive).
+8. Sends via `order_place` (money management, leverage 10–50× from 1h volatility, verification, audit log).
 
 ### Pine indicator with T3 (optional)
 

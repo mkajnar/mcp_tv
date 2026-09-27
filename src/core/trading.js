@@ -56,6 +56,7 @@ export const DEFAULT_CONFIG = {
     switch_chart: true,    // temporarily switch the chart to read bars of positions on other symbols
     bars_source: 'bybit',  // 'bybit' = ATR from Bybit public klines for BYBIT:*.P (no chart switching), 'chart' = active chart
     atr_timeframe: '5',    // kline interval for the Bybit source (1, 5, 15, 60, D) — 5m matches the entry/stop structure
+    keep_awake: true,      // trail --watch holds Windows (system + display) awake — Modern Standby suspends the loop
   },
 };
 

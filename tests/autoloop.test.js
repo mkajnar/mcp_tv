@@ -5,7 +5,7 @@
  */
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { summarizeAuto } from '../src/core/autoloop.js';
+import { summarizeAuto, errorKind } from '../src/core/autoloop.js';
 
 describe('summarizeAuto', () => {
   it('trade: side, type, plan prices and order result', () => {
@@ -42,5 +42,21 @@ describe('summarizeAuto', () => {
     const row = summarizeAuto('X', { success: false, decision: { action: 'trade', side: 'sell', type: 'stop', reasons: [] }, order: { success: false, error: 'rejected' } });
     assert.equal(row.order_ok, false);
     assert.equal(row.reason, 'rejected');
+  });
+});
+
+describe('errorKind', () => {
+  it('broker disconnected stops the pass', () => {
+    assert.equal(errorKind('Assertion failed: Broker is not connected'), 'broker');
+    assert.equal(errorKind('No broker connected in the Trading Panel. Connect Paper Trading (or a broker) first.'), 'broker');
+    assert.equal(errorKind('quotesSnapshot not received'), 'broker');
+  });
+  it('bars that do not load (fresh listing, sparse stock perp) are data errors', () => {
+    assert.equal(errorKind('Bars for BYBIT:PONSUSDT.P 1d did not load: {"bars":28}'), 'data');
+    assert.equal(errorKind('Not enough closed bars for analysis: 27'), 'data');
+  });
+  it('anything else is left alone', () => {
+    assert.equal(errorKind('timed out after 180 s'), null);
+    assert.equal(errorKind(null), null);
   });
 });
